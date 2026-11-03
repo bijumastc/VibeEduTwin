@@ -24,7 +24,12 @@ CHROMA_DIR = ROOT / "chroma_db"  # ChromaDB persistent storage
 
 
 # --- Schema -------------------------------------------------------------------
-DISCIPLINES = ("Science", "Humanities", "Commerce")
+DISCIPLINES = ("Sciences", "Technology", "Medicine", "Arts & Humanities",
+               "Commerce & Management", "Social Sciences")
+
+# Pre-curriculum discipline names -> current names (data migration).
+OLD_DISCIPLINES = {"Science": "Sciences", "Humanities": "Arts & Humanities",
+                   "Commerce": "Commerce & Management"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS learners (
@@ -33,7 +38,7 @@ CREATE TABLE IF NOT EXISTS learners (
     year TEXT NOT NULL,
     subject TEXT NOT NULL,
     language_preference TEXT NOT NULL,
-    discipline TEXT NOT NULL DEFAULT 'Science',
+    discipline TEXT NOT NULL DEFAULT 'Sciences',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS skill_scores (
@@ -79,6 +84,7 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)  # no-op once tables exist
     _ensure_discipline_column(conn)  # migrate pre-discipline databases
+    _migrate_discipline_values(conn)  # map pre-curriculum names to current ones
     return conn
 
 
@@ -90,16 +96,23 @@ def _ensure_discipline_column(conn: sqlite3.Connection) -> None:
     columns = [row[1] for row in conn.execute("PRAGMA table_info(learners)")]
     if "discipline" not in columns:
         conn.execute(
-            "ALTER TABLE learners ADD COLUMN discipline TEXT NOT NULL DEFAULT 'Science'"
+            "ALTER TABLE learners ADD COLUMN discipline TEXT NOT NULL DEFAULT 'Sciences'"
         )
+
+
+def _migrate_discipline_values(conn: sqlite3.Connection) -> None:
+    """Rewrite pre-curriculum discipline names to the current six."""
+    for old, new in OLD_DISCIPLINES.items():
+        conn.execute("UPDATE learners SET discipline = ? WHERE discipline = ?",
+                     (new, old))
 
 
 # --- Learners -----------------------------------------------------------------
 def create_learner(name: str, year: str, subject: str, language: str,
-                   discipline: str = "Science") -> int:
+                   discipline: str = "Sciences") -> int:
     """Register a learner; returns the new learner id.
 
-    discipline must be one of Science, Humanities, Commerce.
+    discipline must be one of the six curriculum disciplines.
     """
     if discipline not in DISCIPLINES:
         raise ValueError(
@@ -195,6 +208,17 @@ def get_events(learner_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_scaffold_events(learner_id: int) -> list[dict]:
+    """Return scaffold-ladder rows (tool, result) for a learner, oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT tool, result FROM event_log"
+            " WHERE learner_id = ? AND step = 'Scaffold' ORDER BY id",
+            (learner_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # --- Writing samples (ChromaDB, one collection per learner) ----------------------
 def _get_chroma_client():
     """Persistent local client (pure-Python backend; see knowledge_base.py)."""
@@ -260,7 +284,7 @@ def search_writing_samples(learner_id: int, query: str, n_results: int = 3) -> l
 def _sample_test() -> None:
     """Create one learner, save scores + draft + sample, print everything back."""
     learner_id = create_learner("Meera", "10", "English", "Malayalam",
-                                discipline="Science")
+                                discipline="Sciences")
     print(f"Created learner id={learner_id}")
 
     save_skill_scores(learner_id, {

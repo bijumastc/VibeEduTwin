@@ -8,14 +8,15 @@ export default function MyGrowth({ go }) {
   const [state, setState] = useState({ loading: true });
 
   useEffect(() => {
-    Promise.all([api.growth(), api.levelCheck(), api.drafts()])
-      .then(([growth, levels, draftsRes]) => {
+    Promise.all([api.growth(), api.levelCheck(), api.drafts(), api.independence()])
+      .then(([growth, levels, draftsRes, independence]) => {
         if ((levels.leveled_up || []).length > 0) LeveledUp.set();
         setState({
           loading: false,
           growth,
           levels,
           drafts: [...draftsRes.drafts].reverse(),
+          independence,
         });
       })
       .catch((err) => setState({ loading: false, error: err.message }));
@@ -69,6 +70,11 @@ export default function MyGrowth({ go }) {
           {names.length === 0 ? 'Write now' : 'Practise now'}
         </button>
       )}
+
+      <div className="card">
+        <div className="card-title">Working more independently</div>
+        <p className="muted">{state.independence.message}</p>
+      </div>
 
       <h2>My drafts</h2>
       {state.drafts.length === 0 && (

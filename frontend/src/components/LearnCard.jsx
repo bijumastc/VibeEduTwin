@@ -1,16 +1,22 @@
-// LearnCard: one short rule, its source, and good/weak discipline examples.
-// Shared by the Write result screen and the Learn tab.
-export default function LearnCard({ card, onPractise }) {
-  const source = [card.source, card.chapter].filter(Boolean).join(' · ');
+// LearnCard: one verified rule + one verified example, each with its
+// book/chapter/license underneath. Shared by the Write result screen and
+// the Learn tab's module view.
+function cite(part) {
+  return [part.source, part.chapter].filter(Boolean).join(' · ');
+}
+
+export default function LearnCard({ title, rule, example, onPractise }) {
   return (
     <div className="card">
-      <div className="card-title">Learn: {card.skill}</div>
-      <p>{card.rule}</p>
-      <p className="muted">
-        <em>{source}</em> ({card.license || 'license unknown'})
-      </p>
-      <p><strong>Good:</strong> {card.good_example}</p>
-      <p><strong>Weak:</strong> {card.weak_example}</p>
+      <div className="card-title">{title}</div>
+      <p><strong>Rule:</strong> {rule.text}</p>
+      {rule.source && (
+        <p className="muted"><em>{cite(rule)}</em> ({rule.license || 'license unknown'})</p>
+      )}
+      <p><strong>Example:</strong> {example.text}</p>
+      {example.source && (
+        <p className="muted"><em>{cite(example)}</em> ({example.license || 'license unknown'})</p>
+      )}
       <button className="btn" onClick={onPractise}>Practise this</button>
     </div>
   );

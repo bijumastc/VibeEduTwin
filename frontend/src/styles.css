@@ -341,6 +341,30 @@ input[type="text"] {
   margin: 0;
 }
 
+.chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.chip-row button {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: var(--radius-pill);
+  min-height: 44px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.chip-row button.active {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+
 /* Misc */
 .error {
   background: #fdecec;

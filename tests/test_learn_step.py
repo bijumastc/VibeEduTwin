@@ -20,7 +20,7 @@ def tmp_db(tmp_path, monkeypatch):
     return store
 
 
-def _learner(tmp_db, discipline="Science"):
+def _learner(tmp_db, discipline="Sciences"):
     return tmp_db.create_learner("Test", "10", "English", "Malayalam",
                                  discipline=discipline)
 
@@ -31,15 +31,16 @@ def _sentences(text):
 
 # --- Discipline in the learner profile ------------------------------------
 def test_signup_saves_discipline(tmp_db):
-    for discipline in ("Science", "Humanities", "Commerce"):
+    assert len(store.DISCIPLINES) == 6
+    for discipline in store.DISCIPLINES:
         learner_id = tmp_db.create_learner("T", "10", "English", "Malayalam",
                                            discipline=discipline)
         assert tmp_db.get_learner(learner_id)["discipline"] == discipline
 
 
-def test_discipline_defaults_to_science(tmp_db):
+def test_discipline_defaults_to_sciences(tmp_db):
     learner_id = tmp_db.create_learner("T", "10", "English", "Malayalam")
-    assert tmp_db.get_learner(learner_id)["discipline"] == "Science"
+    assert tmp_db.get_learner(learner_id)["discipline"] == "Sciences"
 
 
 def test_invalid_discipline_rejected(tmp_db):
@@ -59,91 +60,61 @@ def test_migration_adds_discipline_to_old_db(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     monkeypatch.setattr(store, "DB_PATH", db_path)
-    assert store.get_learner(1)["discipline"] == "Science"
+    assert store.get_learner(1)["discipline"] == "Sciences"
+
+
+def test_old_discipline_names_migrated(tmp_db):
+    with tmp_db._connect():
+        pass  # create tables
+    conn = sqlite3.connect(tmp_db.DB_PATH)
+    conn.execute("INSERT INTO learners (name, year, subject, language_preference,"
+                 " discipline, created_at) VALUES ('A', '10', 'English', 'Malayalam',"
+                 " 'Science', 'now')")
+    conn.execute("INSERT INTO learners (name, year, subject, language_preference,"
+                 " discipline, created_at) VALUES ('B', '10', 'English', 'Malayalam',"
+                 " 'Humanities', 'now')")
+    conn.execute("INSERT INTO learners (name, year, subject, language_preference,"
+                 " discipline, created_at) VALUES ('C', '10', 'English', 'Malayalam',"
+                 " 'Commerce', 'now')")
+    conn.commit()
+    conn.close()
+    assert tmp_db.get_learner(1)["discipline"] == "Sciences"
+    assert tmp_db.get_learner(2)["discipline"] == "Arts & Humanities"
+    assert tmp_db.get_learner(3)["discipline"] == "Commerce & Management"
 
 
 def test_signup_endpoint(tmp_db):
-    body = main.post_learner(main.LearnerIn(name="Asha", discipline="Commerce"))
+    body = main.post_learner(main.LearnerIn(name="Asha", discipline="Commerce & Management"))
     assert body["ok"] is True
-    assert tmp_db.get_learner(body["learner_id"])["discipline"] == "Commerce"
+    assert tmp_db.get_learner(body["learner_id"])["discipline"] == "Commerce & Management"
     with pytest.raises(HTTPException) as exc:
         main.post_learner(main.LearnerIn(name="Asha", discipline="Maths"))
     assert exc.value.status_code == 400
 
 
-# --- Learn card ------------------------------------------------------------
-def test_learn_endpoint_returns_card(tmp_db, monkeypatch):
-    monkeypatch.setattr(main, "_query_guide_chunks", lambda skill, n_results=1: ([], []))
-    learner_id = _learner(tmp_db, "Humanities")
-    tmp_db.save_skill_scores(learner_id, {"Grammar": 85})
-    card = main.get_learn(learner_id, "Grammar")
-    assert card["skill"] == "Grammar" and card["level"] == 3
-    assert card["discipline"] == "Humanities"
-    assert len(_sentences(card["rule"])) <= 3
-    assert card["source"] and card["license"]
-    assert card["good_example"] and card["weak_example"]
-    assert card["good_example"] != card["weak_example"]
-    with pytest.raises(HTTPException) as bad_skill:
-        main.get_learn(learner_id, "Cooking")
-    assert bad_skill.value.status_code == 400
-    with pytest.raises(HTTPException) as bad_learner:
-        main.get_learn(999, "Grammar")
-    assert bad_learner.value.status_code == 404
-
-
-def test_learn_card_uses_chromadb_rule_and_chapter(monkeypatch):
-    monkeypatch.setattr(
-        main, "_query_guide_chunks",
-        lambda skill, n_results=1: (
-            ["First. Second. Third. Fourth. Fifth."],
-            [{"source": "guide.pdf", "chapter": "Chapter 2", "license": "CC BY"}]))
-    card = main.learn_card("Grammar", 1, "Science")
-    assert card["rule"] == "First. Second. Third."
-    assert card["source"] == "guide.pdf" and card["chapter"] == "Chapter 2"
-    assert card["license"] == "CC BY"
-
-
-def test_learn_card_falls_back_without_guides(monkeypatch):
-    monkeypatch.setattr(main, "_query_guide_chunks", lambda skill, n_results=1: ([], []))
-    card = main.learn_card("Grammar", 1, "Science")
-    assert card["rule"] == main.FALLBACK_RULES["Grammar"]
-    assert len(_sentences(card["rule"])) <= 3
-    assert card["source"] and card["license"]
-
-
-def test_discipline_examples_cover_all_skills():
-    for skill in main.SKILLS:
-        goods = set()
-        for discipline in store.DISCIPLINES:
-            pair = main.DISCIPLINE_EXAMPLES[skill][discipline]
-            assert pair["good"].strip() and pair["weak"].strip()
-            assert pair["good"] != pair["weak"]
-            goods.add(pair["good"])
-        assert len(goods) == 3, f"{skill} examples are not discipline-specific"
-
-
+# --- Learn card (verified excerpts only) -------------------------------------
 def test_diagnose_includes_learn_card(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "study_material", lambda skill, n_results=2: [])
-    monkeypatch.setattr(main, "_query_guide_chunks", lambda skill, n_results=1: ([], []))
-    learner_id = _learner(tmp_db, "Commerce")
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: ([], []))
+    learner_id = _learner(tmp_db, "Commerce & Management")
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content="Nice good."))
     assert res["learn"]["skill"] == res["weakest"]
-    assert res["learn"]["discipline"] == "Commerce"
-    assert len(_sentences(res["learn"]["rule"])) <= 3
+    assert res["learn"]["discipline"] == "Commerce & Management"
+    assert res["learn"]["rule"]["text"] == main.NO_VERIFIED_EXAMPLE
+    assert res["learn"]["example"]["text"] == main.NO_VERIFIED_EXAMPLE
 
 
 # --- Discipline-aware practice ---------------------------------------------
 def test_practice_uses_learner_discipline(tmp_db):
-    learner_id = _learner(tmp_db, "Humanities")
+    learner_id = _learner(tmp_db, "Arts & Humanities")
     body = main.get_practice(learner_id)
-    assert body["discipline"] == "Humanities"
+    assert body["discipline"] == "Arts & Humanities"
     assert "variants" not in body["items"][0] and "answer" not in body["items"][0]
-    prompts = {d: main.practice_items_for(body["skill"], body["level"], d)[0]["prompt"]
-               for d in store.DISCIPLINES}
-    assert body["items"][0]["prompt"] == prompts["Humanities"]
-    assert len(set(prompts.values())) == 3
-    answers = {it["id"]: it["answer"]
-               for it in main.practice_items_for(body["skill"], body["level"], "Humanities")}
+    served = main.practice_items_for(body["skill"], body["level"], "Arts & Humanities")
+    assert body["items"][0]["prompt"] == served[0]["prompt"]
+    other = main.practice_items_for(body["skill"], body["level"], "Sciences")
+    assert served[0]["prompt"] != other[0]["prompt"]
+    answers = {it["id"]: it["answer"] for it in served}
     scored = main.post_answers(main.PracticeAnswersIn(
         learner_id=learner_id, set_id=body["set_id"], answers=answers))
     assert scored["accuracy"] == 100
@@ -169,19 +140,21 @@ def test_tabs_are_home_write_learn_practice_growth():
     assert not (ROOT / "frontend" / "src" / "screens" / "MyWriting.jsx").exists()
 
 
-def test_learn_screen_lists_skills_with_levels():
+def test_learn_screen_is_discipline_curriculum():
     learn = (ROOT / "frontend" / "src" / "screens" / "Learn.jsx").read_text(encoding="utf-8")
-    for skill in main.SKILLS:
-        assert skill in learn
-    assert "api.learn" in learn and "levelCheck" in learn
+    assert "api.curriculum()" in learn and "api.moduleContent(" in learn
+    assert "current" in learn and "Locked" in learn
+    assert "res.discipline" in learn  # learner's discipline opens by default
     card = (ROOT / "frontend" / "src" / "components" / "LearnCard.jsx").read_text(
         encoding="utf-8")
-    assert "Good:" in card and "Weak:" in card and "Practise this" in card
+    assert "Rule:" in card and "Example:" in card and "Practise this" in card
+    assert "chapter" in card and "license" in card
 
 
 def test_write_shows_learn_card_after_diagnosis():
     write = (ROOT / "frontend" / "src" / "screens" / "Write.jsx").read_text(encoding="utf-8")
-    assert "LearnCard" in write and "result.learn" in write
+    assert "LearnCard" in write and "result.learn.rule" in write
+    assert "result.learn.example" in write
 
 
 def test_my_growth_merged_drafts_with_feedback():

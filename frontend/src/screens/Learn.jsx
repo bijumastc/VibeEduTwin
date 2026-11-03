@@ -1,68 +1,114 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import LearnCard from '../components/LearnCard.jsx';
+import ScaffoldTask from '../components/ScaffoldTask.jsx';
 
-// Learn: the 7 skills with current levels; tapping one shows its Learn card.
-const SKILLS = [
-  'Grammar',
-  'Vocabulary',
-  'Sentence structure',
-  'Paragraphing',
-  'Argument',
-  'Using sources',
-  'Academic tone',
-];
-
+// Learn: curriculum of 6 disciplines x 6 ordered modules. The learner's own
+// discipline opens by default; others are browsable. Modules unlock in order
+// by level; the current module is marked clearly.
 export default function Learn({ go }) {
-  const [levels, setLevels] = useState(null);
-  const [card, setCard] = useState(null);
-  const [loadingCard, setLoadingCard] = useState(false);
+  const [data, setData] = useState(null);
+  const [discipline, setDiscipline] = useState('');
+  const [content, setContent] = useState(null);
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    api.levelCheck()
-      .then((res) => setLevels(res.levels || {}))
+    api.curriculum()
+      .then((res) => {
+        setData(res);
+        setDiscipline(res.discipline);
+      })
       .catch((err) => setError(err.message));
   }, []);
 
-  const openSkill = (skill) => {
+  const openModule = (moduleId) => {
     setError('');
-    setLoadingCard(true);
-    setCard(null);
-    api.learn(skill)
-      .then((res) => setCard(res))
+    setLoadingContent(true);
+    setContent(null);
+    api.moduleContent(discipline, moduleId)
+      .then((res) => setContent(res))
       .catch((err) => setError(err.message))
-      .finally(() => setLoadingCard(false));
+      .finally(() => setLoadingContent(false));
+  };
+
+  const pickDiscipline = (name) => {
+    setDiscipline(name);
+    setContent(null);
+    setError('');
   };
 
   if (error) return <div><h2>Learn</h2><div className="error">{error}</div></div>;
-  if (!levels) return <div><h2>Learn</h2><p className="loading">Loading…</p></div>;
+  if (!data) return <div><h2>Learn</h2><p className="loading">Loading…</p></div>;
 
-  if (card || loadingCard) {
+  if (taskOpen && content) {
+    return (
+      <ScaffoldTask
+        discipline={content.discipline}
+        moduleId={content.module}
+        moduleTitle={content.title}
+        onBack={() => setTaskOpen(false)}
+      />
+    );
+  }
+
+  if (content || loadingContent) {
     return (
       <div>
         <h2>Learn</h2>
-        {loadingCard && <p className="loading">Loading…</p>}
-        {card && <LearnCard card={card} onPractise={() => go('practice')} />}
-        <button className="btn secondary" onClick={() => setCard(null)}>
-          All skills
+        {loadingContent && <p className="loading">Loading…</p>}
+        {content && (
+          <>
+            <LearnCard
+              title={`${content.title} · ${content.discipline}`}
+              rule={content.rule}
+              example={content.example}
+              onPractise={() => go('practice')}
+            />
+            <button className="btn" onClick={() => setTaskOpen(true)}>Try the task</button>
+            <div style={{ height: 10 }} />
+          </>
+        )}
+        <button className="btn secondary" onClick={() => setContent(null)}>
+          All modules
         </button>
       </div>
     );
   }
 
+  const current = data.disciplines.find((d) => d.name === discipline) || data.disciplines[0];
+
   return (
     <div>
       <h2>Learn</h2>
-      {SKILLS.map((skill) => (
-        <button
-          key={skill}
-          className="btn secondary option-btn"
-          onClick={() => openSkill(skill)}
-        >
-          {skill}
-          <span className="level-chip">Level {levels[skill]?.level || 1}</span>
-        </button>
+      <p className="muted">Your discipline: {data.discipline}</p>
+      <div className="chip-row">
+        {data.disciplines.map((d) => (
+          <button
+            key={d.name}
+            className={d.name === current.name ? 'active' : ''}
+            onClick={() => pickDiscipline(d.name)}
+          >
+            {d.name}
+          </button>
+        ))}
+      </div>
+      {current.modules.map((m) => (
+        <div key={m.id}>
+          <button
+            className="btn secondary option-btn"
+            onClick={() => m.unlocked && openModule(m.id)}
+            disabled={!m.unlocked}
+          >
+            {m.title}
+            {m.current && <span className="focus-tag">current</span>}
+            <span className="level-chip">Level {m.learner_level}</span>
+          </button>
+          {!m.unlocked && (
+            <p className="muted">Locked · needs Level {m.required_level} in {m.skill}</p>
+          )}
+        </div>
       ))}
     </div>
   );

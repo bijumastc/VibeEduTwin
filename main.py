@@ -6,11 +6,17 @@ Endpoints:
   POST /learners             sign up a learner (name + discipline)
   POST /drafts               save a learner paragraph
   POST /diagnose             score a draft on 7 skills, find the weakest
-  GET  /learn                Learn card for one skill (rule + examples)
+  GET  /curriculum           disciplines + module unlock states for a learner
+  GET  /curriculum/modules   one module's verified rule + example excerpts
   GET  /practice             practice set for the weakest skill + level
   POST /practice/answers     score answers, bump the skill if they did well
   POST /level-check          report current levels and recent level-ups
   GET  /growth               current skill scores for the growth chart
+  GET  /independence         hint-use trend ("working more independently")
+  POST /scaffold/start        hand out a module task (try with no help)
+  POST /scaffold/help         one rung up the ladder (question/hint/excerpt)
+  POST /scaffold/show         "Show me now": jump to the book excerpt
+  POST /scaffold/rewrite      accept the learner's rewrite
   POST /teacher/practice-sets  generate a set from plain language + verify it
 
 Every endpoint writes to the event log (learner_store), so the app can
@@ -73,6 +79,11 @@ SKILL_BUMP = 10        # points added to a skill after a strong practice set
 # In-memory for the demo; a real deployment would persist these.
 ISSUED_SETS: dict = {}
 
+# Open scaffold attempts: attempt_id -> {learner_id, discipline, module, skill,
+# level, step, q_index}. Steps: try -> question -> hint -> excerpt -> rewrite
+# -> done ("Show me now" jumps straight to excerpt).
+SCAFFOLD_ATTEMPTS: dict = {}
+
 class UTF8JSONResponse(JSONResponse):
     """JSON responses as raw UTF-8 with an explicit charset.
 
@@ -108,7 +119,7 @@ class LearnerIn(BaseModel):
     year: str = "10"
     subject: str = "English"
     language: str = "Malayalam"
-    discipline: str = Field(description="Science, Humanities, or Commerce")
+    discipline: str = Field(description="One of the six curriculum disciplines")
 
 
 class DraftIn(BaseModel):
@@ -142,14 +153,41 @@ class TwinAskIn(BaseModel):
     screen: str = "write"  # where the panel was opened: write | practice
 
 
+class ScaffoldStartIn(BaseModel):
+    learner_id: int
+    discipline: str
+    module: str
+
+
+class ScaffoldHelpIn(BaseModel):
+    learner_id: int
+    attempt_id: str
+    attempt_text: str = ""
+
+
+class ScaffoldShowIn(BaseModel):
+    learner_id: int
+    attempt_id: str
+
+
+class ScaffoldRewriteIn(BaseModel):
+    learner_id: int
+    attempt_id: str
+    text: str = ""
+
+
 # --- Helpers ----------------------------------------------------------------------
 def level_for_score(score: float) -> int:
-    """Map a 0-100 skill score to level 1, 2, or 3."""
-    if score < 40:
+    """Map a 0-100 skill score to levels 1-5."""
+    if score < 20:
         return 1
-    if score < 70:
+    if score < 40:
         return 2
-    return 3
+    if score < 60:
+        return 3
+    if score < 80:
+        return 4
+    return 5
 
 
 def latest_scores(learner_id: int) -> dict[str, float]:
@@ -161,7 +199,7 @@ def latest_scores(learner_id: int) -> dict[str, float]:
 
 
 def weakest_skill(scores: dict[str, float]) -> tuple[str, int]:
-    """Weakest skill and its level; defaults to Paragraphing L1 with no data."""
+    """Weakest skill and its level (1-5); defaults to Paragraphing L1 with no data."""
     if not scores:
         return "Paragraphing", 1
     skill = min(SKILLS, key=lambda s: scores.get(s, 0))
@@ -181,8 +219,8 @@ def twin_note(weakest: str) -> str:
 SCRIPTS_KB_COLLECTION = "vibeedutwin_knowledge"
 
 
-def _query_guide_chunks(skill: str, n_results: int = 2) -> tuple[list, list]:
-    """Raw (documents, metadatas) for a skill from either KB collection.
+def _query_guides(query_text: str, n_results: int = 2) -> tuple[list, list]:
+    """Raw (documents, metadatas) for a query from either KB collection.
 
     Returns ([], []) when no guides are ingested yet.
     """
@@ -200,13 +238,18 @@ def _query_guide_chunks(skill: str, n_results: int = 2) -> tuple[list, list]:
             if collection.count() == 0:
                 continue
             result = collection.query(
-                query_texts=[f"{skill} academic writing"], n_results=n_results
+                query_texts=[query_text], n_results=n_results
             )
             return (result.get("documents", [[]])[0],
                     result.get("metadatas", [[]])[0])
         return [], []
     except Exception:
         return [], []  # no guides ingested yet
+
+
+def _query_guide_chunks(skill: str, n_results: int = 2) -> tuple[list, list]:
+    """Raw (documents, metadatas) for a skill from either KB collection."""
+    return _query_guides(f"{skill} academic writing", n_results)
 
 
 def study_material(skill: str, n_results: int = 2) -> list[dict]:
@@ -225,107 +268,198 @@ def first_sentences(text: str, n: int = 3) -> str:
     return " ".join(p for p in parts[:n] if p)
 
 
-# Fallback rules (original text, CC BY) when no guides are ingested yet.
-FALLBACK_RULES = {
-    "Grammar": ("Every sentence needs a subject and a verb that agree. "
-                "With he, she, or it, the verb ends in -s: she writes, it rains."),
-    "Vocabulary": ("One precise word beats three vague ones. "
-                   "Swap weak words like 'nice' for exact ones like 'persuasive'."),
-    "Sentence structure": ("Join short related sentences with because, but, or when. "
-                           "If a sentence runs past 25 words, split it in two."),
-    "Paragraphing": ("One paragraph makes one point: topic sentence first, "
-                     "details next, closing line last. Cut any sentence that does "
-                     "not support the topic sentence."),
-    "Argument": ("An argument is a claim plus a reason: state your view, then prove "
-                 "it with because, evidence, or an example. No reason word, no argument."),
-    "Using sources": ("Borrow ideas openly: name the source with 'According to...' "
-                      "and use your own words. Copying without credit is plagiarism."),
-    "Academic tone": ("Academic writing is calm: avoid chatty words like 'very' "
-                      "and 'thing'. Soften strong claims with 'suggests' and 'may'."),
-}
+# Shown whenever the library has no suitable excerpt. Rules and examples are
+# never generated or invented: they come from ChromaDB or this message shows.
+NO_VERIFIED_EXAMPLE = "No verified example in our library yet."
 
-# One good + one weak example per skill, written for each discipline:
-# a lab report sentence (Science), an essay sentence (Humanities),
-# a business report sentence (Commerce).
-DISCIPLINE_EXAMPLES: dict[str, dict[str, dict[str, str]]] = {
-    "Grammar": {
-        "Science": {"good": "The solution boils at 100°C and turns into steam.",
-                    "weak": "The solution boil at 100°C and turn into steam."},
-        "Humanities": {"good": "The article discusses the causes of the revolt.",
-                       "weak": "The article discuss the causes of the revolt."},
-        "Commerce": {"good": "The report shows a sharp rise in sales.",
-                     "weak": "The report show a sharp rise in sales."},
-    },
-    "Vocabulary": {
-        "Science": {"good": "We recorded a significant change in temperature.",
-                    "weak": "We got a very big change in temperature."},
-        "Humanities": {"good": "The essay presents several significant ideas.",
-                       "weak": "The essay has a lot of really nice ideas."},
-        "Commerce": {"good": "Profits increased significantly this quarter.",
-                     "weak": "Profits went up by a very big amount."},
-    },
-    "Sentence structure": {
-        "Science": {"good": "When the flask cracked, we stopped heating.",
-                    "weak": "We heated the flask. It cracked. We stopped."},
-        "Humanities": {"good": "A war broke out because the king died without an heir.",
-                       "weak": "The king died. There was a war. Many suffered."},
-        "Commerce": {"good": "The firm lost money because sales fell while costs rose.",
-                     "weak": "Sales fell. Costs rose. The firm lost money."},
-    },
-    "Paragraphing": {
-        "Science": {"good": "The experiment tests whether salt lowers the boiling point of water.",
-                    "weak": "This is about my experiment."},
-        "Humanities": {"good": "The freedom struggle united peasants, workers, and students against colonial rule.",
-                       "weak": "I will write about the freedom struggle."},
-        "Commerce": {"good": "This report explains why our store's profits fell last quarter.",
-                     "weak": "This report is about our shop."},
-    },
-    "Argument": {
-        "Science": {"good": "Tap water is unsafe here because tests found lead above the limit.",
-                    "weak": "Tap water is bad. Everyone knows it."},
-        "Humanities": {"good": "The policy failed because it ignored the farmers it claimed to help.",
-                       "weak": "The policy failed. It was terrible."},
-        "Commerce": {"good": "We should raise prices because material costs rose 20% this year.",
-                     "weak": "We should raise prices. Trust me."},
-    },
-    "Using sources": {
-        "Science": {"good": "According to the physics textbook, heat expands most metals.",
-                    "weak": "Scientists say heat expands metals."},
-        "Humanities": {"good": "According to Habib (2002), the revolt began in Meerut.",
-                       "weak": "People say the revolt began in Meerut."},
-        "Commerce": {"good": "According to the 2024 sales report, revenue peaks in December.",
-                     "weak": "Everyone knows sales peak in December."},
-    },
-    "Academic tone": {
-        "Science": {"good": "The result was significant and supports the hypothesis.",
-                    "weak": "The result was really awesome and super clear."},
-        "Humanities": {"good": "This essay suggests the king's policy may have failed.",
-                       "weak": "This essay is gonna prove the king was totally wrong."},
-        "Commerce": {"good": "Our profits are likely to grow steadily this year.",
-                     "weak": "Our profits are gonna be amazing this year!"},
-    },
-}
+
+def verified_excerpt(query_text: str, sentences: int = 3) -> dict:
+    """Best library excerpt for a query, with book/chapter/license provenance.
+
+    Returns {"text", "source", "chapter", "license"}; when nothing suitable
+    exists, text is NO_VERIFIED_EXAMPLE and provenance is None.
+    """
+    docs, metas = _query_guides(query_text, n_results=3)
+    for doc, meta in zip(docs, metas):
+        text = first_sentences(doc or "", sentences)
+        if text.strip():
+            meta = meta or {}
+            return {"text": text, "source": meta.get("source"),
+                    "chapter": meta.get("chapter"), "license": meta.get("license")}
+    return {"text": NO_VERIFIED_EXAMPLE, "source": None,
+            "chapter": None, "license": None}
 
 
 def learn_card(skill: str, level: int, discipline: str) -> dict:
-    """Build a short Learn card: one rule, its source, and discipline examples.
-
-    The rule is the top ChromaDB hit trimmed to 3 sentences, or a short
-    fallback rule when no guides are ingested yet.
-    """
-    docs, metas = _query_guide_chunks(skill, n_results=1)
-    if docs and (docs[0] or "").strip():
-        meta = metas[0] if metas else {}
-        rule, source = first_sentences(docs[0]), meta.get("source")
-        chapter, license = meta.get("chapter"), meta.get("license")
-    else:
-        rule = FALLBACK_RULES[skill]
-        source, chapter, license = "VibeEduTwin", "Study guide", "CC BY"
-    examples = DISCIPLINE_EXAMPLES[skill][discipline]
+    """Build a short Learn card from verified library excerpts only."""
+    genre = DISCIPLINE_GENRES[discipline]
     return {"skill": skill, "level": level, "discipline": discipline,
-            "rule": rule, "source": source, "chapter": chapter,
-            "license": license, "good_example": examples["good"],
-            "weak_example": examples["weak"]}
+            "rule": verified_excerpt(f"{skill} writing rule"),
+            "example": verified_excerpt(f"{skill} writing example {genre}")}
+
+
+# --- Curriculum ---------------------------------------------------------------
+# Six disciplines, six ordered modules each. The first five modules are shared;
+# the sixth teaches the discipline's genre (Medicine: writing about case
+# reports only - never health advice).
+DISCIPLINE_GENRES = {
+    "Sciences": "lab report",
+    "Technology": "technical report",
+    "Medicine": "case report",
+    "Arts & Humanities": "essay",
+    "Commerce & Management": "business report",
+    "Social Sciences": "research report",
+}
+
+CURRICULUM_MODULES = [
+    {"id": "topic-sentences", "title": "Topic sentences",
+     "skill": "Paragraphing", "required_level": 1, "query": "topic sentences"},
+    {"id": "thesis-statements", "title": "Thesis statements",
+     "skill": "Argument", "required_level": 2, "query": "thesis statements"},
+    {"id": "developing-paragraphs", "title": "Developing paragraphs",
+     "skill": "Paragraphing", "required_level": 2, "query": "developing paragraphs"},
+    {"id": "coherence-flow", "title": "Coherence and flow",
+     "skill": "Sentence structure", "required_level": 3, "query": "coherence and flow"},
+    {"id": "using-sources", "title": "Using sources",
+     "skill": "Using sources", "required_level": 3, "query": "using sources citations"},
+]
+
+
+def genre_module(discipline: str) -> dict:
+    """The sixth module: writing the discipline's genre."""
+    genre = DISCIPLINE_GENRES[discipline]
+    return {"id": "genre", "title": (genre + "s").capitalize(),
+            "skill": "Academic tone", "required_level": 3,
+            "query": f"{genre} writing"}
+
+
+def discipline_modules(discipline: str) -> list[dict]:
+    """All six modules for a discipline, in unlock order."""
+    return [*CURRICULUM_MODULES, genre_module(discipline)]
+
+
+def module_states(discipline: str, scores: dict[str, float]) -> list[dict]:
+    """Module list with unlock state; the highest unlocked module is current.
+
+    Modules unlock in order: a module opens when every earlier module is open
+    and the learner's level in the module's skill meets required_level.
+    """
+    states = []
+    prev_open = True
+    for module in discipline_modules(discipline):
+        level = level_for_score(scores.get(module["skill"], 0))
+        unlocked = prev_open and level >= module["required_level"]
+        states.append({"id": module["id"], "title": module["title"],
+                       "skill": module["skill"],
+                       "required_level": module["required_level"],
+                       "learner_level": level, "unlocked": unlocked,
+                       "current": False})
+        prev_open = unlocked
+    for state in reversed(states):
+        if state["unlocked"]:
+            state["current"] = True
+            break
+    return states
+
+
+def module_rule_query(module: dict) -> str:
+    """ChromaDB query for a module's rule excerpt."""
+    return f"{module['query']} rule"
+
+
+def module_example_query(module: dict, genre: str) -> str:
+    """ChromaDB query for a module's discipline example excerpt."""
+    return f"{module['query']} example {genre}"
+
+
+# --- Productive-struggle scaffolding --------------------------------------------
+# Ladder per module task: (a) learner tries with no help, (b) twin asks one
+# guiding question, (c) a targeted hint on the weak spot, (d) a real book
+# excerpt with source, (e) learner rewrites using the pattern. The twin never
+# writes the learner's answer: questions ask, hints instruct, excerpts quote.
+DISCIPLINE_TOPICS = {
+    "Sciences": "evaporation",
+    "Technology": "password safety",
+    "Medicine": "hand washing",
+    "Arts & Humanities": "the freedom struggle",
+    "Commerce & Management": "festival sales",
+    "Social Sciences": "village life",
+}
+
+SCAFFOLD_TASKS = {
+    "topic-sentences": "Write one topic sentence for a paragraph about {topic}.",
+    "thesis-statements": "Write one thesis statement: your view on {topic}.",
+    "developing-paragraphs": "Write three sentences that develop this idea: {topic}.",
+    "coherence-flow": "Write two sentences about {topic}. Join them with because, but, or so.",
+    "using-sources": "Write one sentence about {topic} that names its source with 'According to'.",
+    "genre": "Write one {genre} sentence about {topic}.",
+}
+
+SCAFFOLD_QUESTIONS = {
+    "topic-sentences": ["What is your paragraph about, in three words?",
+                        "Which words in your line tell the main idea?"],
+    "thesis-statements": ["What is your view in one short line?",
+                          "What reason proves your view?"],
+    "developing-paragraphs": ["Which line is your main idea?",
+                              "Which line does NOT prove it?"],
+    "coherence-flow": ["How do your two ideas connect?",
+                       "Which linker joins them best: because, but, or so?"],
+    "using-sources": ["Whose idea are you using?",
+                      "Where did you read it?"],
+    "genre": ["Who will read this {genre}?",
+              "What fact must your first line give?"],
+}
+
+# Guiding questions before a hint, by level. Levels 1-2 move to hints sooner;
+# Levels 4-5 get only questions (never hints or excerpts from the ladder).
+QUESTIONS_BEFORE_HINT = {1: 0, 2: 1, 3: 2}
+
+SELF_EXPLANATION = "In one line, why does this example work?"
+
+
+def scaffold_task(discipline: str, module_id: str) -> str:
+    """The writing task for a module (an instruction, never an answer)."""
+    return SCAFFOLD_TASKS[module_id].format(
+        topic=DISCIPLINE_TOPICS[discipline], genre=DISCIPLINE_GENRES[discipline])
+
+
+def scaffold_question(module_id: str, index: int, genre: str) -> str:
+    """One guiding question; cycles when a learner needs more than two."""
+    questions = SCAFFOLD_QUESTIONS[module_id]
+    return questions[index % len(questions)].format(genre=genre)
+
+
+def _attempt_sentences(text: str) -> int:
+    return len([s for s in re.split(r"[.!?]+", (text or "")) if s.strip()])
+
+
+def targeted_hint(module_id: str, attempt_text: str, topic: str) -> str:
+    """A hint aimed at the weak spot the attempt shows (or the module default)."""
+    text = (attempt_text or "").strip()
+    lowered = text.lower()
+    if module_id == "topic-sentences":
+        if not text or _attempt_sentences(text) != 1:
+            return "Write just ONE sentence. Nothing more."
+        return f"Start your sentence with the topic itself: {topic}."
+    if module_id == "thesis-statements":
+        if "because" not in lowered:
+            return "Add because and your reason."
+        return "Now cut every word that is not your view or your reason."
+    if module_id == "developing-paragraphs":
+        if _attempt_sentences(text) < 3:
+            return "Add one more sentence that proves your first line."
+        return "Cut any sentence that does not prove your first line."
+    if module_id == "coherence-flow":
+        if not any(w in lowered for w in ("because", "but", "so", "when", "while")):
+            return "Join your two sentences with one of these: because, but, so."
+        return "Read both parts aloud. Do they connect?"
+    if module_id == "using-sources":
+        if "according to" not in lowered:
+            return "Start with 'According to ...' and name your source."
+        return "Now put the rest in your own words."
+    if _attempt_sentences(text) < 1 or len(text.split()) < 5:
+        return "Write one full sentence of five or more words."
+    return "Use calm, exact words. No 'very' or 'really'."
 
 
 # --- Heuristic skill scorers (demo logic; Muse Spark plugs in here) -----------------
@@ -438,6 +572,49 @@ SCORERS = {
 def diagnose_text(text: str) -> dict[str, int]:
     """Score text on all 7 skills with the current (heuristic) scorers."""
     return {skill: SCORERS[skill](text) for skill in SKILLS}
+
+
+# Concrete signs per skill for comparing two drafts: what weak vs strong
+# looks like, the first fix, and the next step after an improvement.
+COMPARE_NOTES = {
+    "Grammar": {"weak": "verbs that do not agree", "strong": "verbs that agree",
+                "first": "Check every he, she, and it.",
+                "next": "Check every line for one more verb."},
+    "Vocabulary": {"weak": "vague words like 'nice'", "strong": "precise words",
+                   "first": "Swap one weak word for a strong one.",
+                   "next": "Swap one more weak word."},
+    "Sentence structure": {"weak": "short, choppy sentences", "strong": "joined sentences",
+                           "first": "Join two short sentences with because.",
+                           "next": "Join one more pair of sentences."},
+    "Paragraphing": {"weak": "no topic sentence", "strong": "a topic sentence",
+                     "first": "Start with one line that tells the main idea.",
+                     "next": "Make your topic sentence narrower."},
+    "Argument": {"weak": "claims with no reasons", "strong": "a claim with a reason",
+                 "first": "Add because and one reason.",
+                 "next": "Add one more reason."},
+    "Using sources": {"weak": "no named sources", "strong": "a named source",
+                      "first": "Add 'According to' before one fact.",
+                      "next": "Name one more source."},
+    "Academic tone": {"weak": "chatty words", "strong": "calm words",
+                      "first": "Swap one chatty word for a calm one.",
+                      "next": "Hunt one more chatty word."},
+}
+
+
+def compare_note(skill: str, prev_level: int, new_level: int) -> str:
+    """One concrete sentence comparing this draft with the previous one."""
+    notes = COMPARE_NOTES[skill]
+    if new_level > prev_level:
+        return (f"In your last paragraph you had {notes['weak']}; "
+                f"this time you have {notes['strong']}. {notes['next']}")
+    if new_level < prev_level:
+        return (f"In your last paragraph you had {notes['strong']}; "
+                f"this time you have {notes['weak']}. {notes['first']}")
+    if new_level >= 2:
+        return (f"Like your last paragraph, this one has {notes['strong']}. "
+                f"{notes['next']}")
+    return (f"Like your last paragraph, this one has {notes['weak']}. "
+            f"{notes['first']}")
 
 
 # --- Practice bank (demo content; Paragraphing L1-L2 are the planned items) ----------
@@ -862,11 +1039,20 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
 }
 
 
+# Practice bank variants are written in three genre families; each curriculum
+# discipline maps to the closest one (lab-flavoured, essay-flavoured, report).
+PRACTICE_VARIANT_FOR = {
+    "Sciences": "Science", "Technology": "Science", "Medicine": "Science",
+    "Arts & Humanities": "Humanities", "Social Sciences": "Humanities",
+    "Commerce & Management": "Commerce",
+}
+
+
 def practice_items_for(skill: str, level: int,
                        discipline: str | None = None) -> list[dict]:
     """Demo bank lookup with fallback: exact level -> L1 -> Paragraphing L1.
 
-    With a discipline, each item's prompt/options come from its discipline
+    With a discipline, each item's prompt/options come from its genre-family
     variant (ids, answers, and explanations stay aligned); without one, the
     generic base items are returned (used by teacher sets).
     """
@@ -875,9 +1061,10 @@ def practice_items_for(skill: str, level: int,
             or PRACTICE_BANK[("Paragraphing", 1)])
     if discipline is None:
         return base
+    family = PRACTICE_VARIANT_FOR.get(discipline, discipline)
     rendered = []
     for item in base:
-        variant = (item.get("variants") or {}).get(discipline)
+        variant = (item.get("variants") or {}).get(family)
         if not variant:
             rendered.append(item)
             continue
@@ -992,35 +1179,194 @@ def post_diagnose(data: DiagnoseIn):
         text = drafts[0]["content"]
     if not (text or "").strip():
         raise HTTPException(status_code=400, detail="Provide draft_id or content")
+    # Snapshot before saving: in the normal draft -> diagnose flow this is
+    # the previous draft's diagnosis, used for the twin's comparison.
+    prev_scores = latest_scores(data.learner_id)
     scores = diagnose_text(text)
     weakest = min(SKILLS, key=lambda s: scores[s])
     store.save_skill_scores(data.learner_id, scores)
     store.log_event(data.learner_id, "Diagnose", "diagnose", "heuristic-scorer",
                     f"weakest={weakest} scores={scores}")
     level = level_for_score(scores[weakest])
-    discipline = learner.get("discipline") or "Science"
+    discipline = learner.get("discipline") or "Sciences"
+    if prev_scores:
+        comparison = compare_note(
+            weakest, level_for_score(prev_scores.get(weakest, 0)), level)
+    else:
+        comparison = "This is your starting point."
+    level_changes = {
+        skill: {"previous": (level_for_score(prev_scores[skill])
+                             if skill in prev_scores else None),
+                "current": level_for_score(scores[skill])}
+        for skill in SKILLS
+    }
     return {"scores": scores, "weakest": weakest,
             "level": level,
             "twin_note": twin_note(weakest),
+            "comparison": comparison,
+            "level_changes": level_changes,
             "study_material": study_material(weakest),
             "learn": learn_card(weakest, level, discipline)}
 
 
-@app.get("/learn")
-def get_learn(learner_id: int, skill: str):
-    """Learn step: a short card for one skill (rule + discipline examples)."""
+@app.get("/curriculum")
+def get_curriculum(learner_id: int):
+    """Learn step: all disciplines with module unlock states for a learner."""
     learner = store.get_learner(learner_id)
     if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
-    if skill not in SKILLS:
-        raise HTTPException(status_code=400,
-                            detail=f"Unknown skill. Choose from: {', '.join(SKILLS)}")
-    level = level_for_score(latest_scores(learner_id).get(skill, 0))
-    discipline = learner.get("discipline") or "Science"
-    card = learn_card(skill, level, discipline)
-    store.log_event(learner_id, "Learn", "twin", "get_learn",
-                    f"skill={skill} level={level} discipline={discipline}")
-    return card
+    scores = latest_scores(learner_id)
+    return {"learner_id": learner_id,
+            "discipline": learner.get("discipline") or "Sciences",
+            "disciplines": [
+                {"name": name, "genre": genre,
+                 "modules": module_states(name, scores)}
+                for name, genre in DISCIPLINE_GENRES.items()
+            ]}
+
+
+def _module_state_or_raise(learner_id: int, discipline: str,
+                           module_id: str) -> tuple[dict, dict]:
+    """(unlock state, module content) for a learner, or raise 404/400/403."""
+    if store.get_learner(learner_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    if discipline not in DISCIPLINE_GENRES:
+        raise HTTPException(status_code=400, detail="Unknown discipline")
+    modules = {m["id"]: m for m in discipline_modules(discipline)}
+    if module_id not in modules:
+        raise HTTPException(status_code=404, detail="Unknown module")
+    states = {s["id"]: s for s in module_states(discipline, latest_scores(learner_id))}
+    state = states[module_id]
+    if not state["unlocked"]:
+        if state["learner_level"] < state["required_level"]:
+            detail = (f"Reach Level {state['required_level']} in "
+                      f"{state['skill']} to unlock this module.")
+        else:
+            detail = "Unlock earlier modules first."
+        raise HTTPException(status_code=403, detail=detail)
+    return state, modules[module_id]
+
+
+@app.get("/curriculum/modules")
+def get_curriculum_module(learner_id: int, discipline: str, module: str):
+    """Learn step: one module's verified rule + example excerpts."""
+    _, content = _module_state_or_raise(learner_id, discipline, module)
+    genre = DISCIPLINE_GENRES[discipline]
+    store.log_event(learner_id, "Learn", "twin", "get_module",
+                    f"discipline={discipline} module={module}")
+    return {"discipline": discipline, "module": module, "title": content["title"],
+            "skill": content["skill"],
+            "rule": verified_excerpt(module_rule_query(content)),
+            "example": verified_excerpt(module_example_query(content, genre))}
+
+
+def _scaffold_view(attempt_id: str, attempt: dict, extra: dict | None = None) -> dict:
+    """Full attempt view: task plus whatever the current step serves."""
+    view = {"attempt_id": attempt_id, "step": attempt["step"],
+            "task": scaffold_task(attempt["discipline"], attempt["module"]),
+            "module": attempt["module"], "discipline": attempt["discipline"]}
+    if extra:
+        view.update(extra)
+    return view
+
+
+def _scaffold_attempt_or_raise(learner_id: int, attempt_id: str) -> tuple[str, dict]:
+    attempt = SCAFFOLD_ATTEMPTS.get(attempt_id)
+    if attempt is None or attempt["learner_id"] != learner_id:
+        raise HTTPException(status_code=404, detail="Unknown or foreign attempt_id")
+    return attempt_id, attempt
+
+
+def _serve_excerpt(learner_id: int, attempt_id: str, attempt: dict,
+                   tool: str) -> dict:
+    """Serve step (d): a real book excerpt with source. Never an answer."""
+    genre = DISCIPLINE_GENRES[attempt["discipline"]]
+    modules = {m["id"]: m for m in discipline_modules(attempt["discipline"])}
+    excerpt = verified_excerpt(
+        module_example_query(modules[attempt["module"]], genre))
+    attempt["step"] = "excerpt"
+    store.log_event(learner_id, "Scaffold", "twin", tool,
+                    f"attempt_id={attempt_id} module={attempt['module']}")
+    return _scaffold_view(attempt_id, attempt, {"excerpt": excerpt})
+
+
+@app.post("/scaffold/start")
+def post_scaffold_start(data: ScaffoldStartIn):
+    """Scaffold step (a): hand out the task; the learner tries with no help."""
+    state, content = _module_state_or_raise(
+        data.learner_id, data.discipline, data.module)
+    attempt_id = uuid.uuid4().hex[:8]
+    SCAFFOLD_ATTEMPTS[attempt_id] = {
+        "learner_id": data.learner_id, "discipline": data.discipline,
+        "module": data.module, "skill": content["skill"],
+        "level": state["learner_level"], "step": "try", "q_index": 0,
+    }
+    store.log_event(data.learner_id, "Scaffold", "twin", "start",
+                    f"attempt_id={attempt_id} module={data.module}")
+    return _scaffold_view(attempt_id, SCAFFOLD_ATTEMPTS[attempt_id],
+                          {"level": state["learner_level"]})
+
+
+@app.post("/scaffold/help")
+def post_scaffold_help(data: ScaffoldHelpIn):
+    """Move one rung up the ladder: question -> hint -> excerpt -> rewrite.
+
+    Levels 1-2 reach hints sooner; Levels 4-5 get only questions.
+    """
+    attempt_id, attempt = _scaffold_attempt_or_raise(
+        data.learner_id, data.attempt_id)
+    if attempt["step"] in ("rewrite", "done"):
+        return _scaffold_view(attempt_id, attempt)
+    level = attempt["level"]
+    genre = DISCIPLINE_GENRES[attempt["discipline"]]
+    topic = DISCIPLINE_TOPICS[attempt["discipline"]]
+    if attempt["step"] == "excerpt":
+        attempt["step"] = "rewrite"
+        return _scaffold_view(attempt_id, attempt, {
+            "prompt": "Now rewrite using the pattern."})
+    if attempt["step"] == "hint":
+        return _serve_excerpt(data.learner_id, attempt_id, attempt, "excerpt")
+    allowed = QUESTIONS_BEFORE_HINT.get(level)
+    if level >= 4 or attempt["q_index"] < (allowed or 0):
+        question = scaffold_question(
+            attempt["module"], attempt["q_index"], genre)
+        attempt["q_index"] += 1
+        attempt["step"] = "question"
+        store.log_event(data.learner_id, "Scaffold", "twin", "question",
+                        f"attempt_id={attempt_id} module={attempt['module']}")
+        return _scaffold_view(attempt_id, attempt, {"question": question})
+    hint = targeted_hint(attempt["module"], data.attempt_text, topic)
+    attempt["step"] = "hint"
+    store.log_event(data.learner_id, "Scaffold", "twin", "hint",
+                    f"attempt_id={attempt_id} module={attempt['module']}")
+    return _scaffold_view(attempt_id, attempt, {"hint": hint})
+
+
+@app.post("/scaffold/show")
+def post_scaffold_show(data: ScaffoldShowIn):
+    """'Show me now': jump to the book excerpt, then one self-explanation ask."""
+    attempt_id, attempt = _scaffold_attempt_or_raise(
+        data.learner_id, data.attempt_id)
+    if attempt["step"] in ("rewrite", "done"):
+        return _scaffold_view(attempt_id, attempt)
+    view = _serve_excerpt(data.learner_id, attempt_id, attempt, "show-me")
+    view["self_explanation"] = SELF_EXPLANATION
+    return view
+
+
+@app.post("/scaffold/rewrite")
+def post_scaffold_rewrite(data: ScaffoldRewriteIn):
+    """Scaffold step (e): accept the learner's rewrite of the task."""
+    if not (data.text or "").strip():
+        raise HTTPException(status_code=400, detail="Rewrite text is empty")
+    attempt_id, attempt = _scaffold_attempt_or_raise(
+        data.learner_id, data.attempt_id)
+    attempt["step"] = "done"
+    words = len(data.text.split())
+    store.log_event(data.learner_id, "Scaffold", "twin", "rewrite",
+                    f"attempt_id={attempt_id} module={attempt['module']} words={words}")
+    return _scaffold_view(attempt_id, attempt, {
+        "message": "Saved. Read it once more against the pattern."})
 
 
 @app.get("/practice")
@@ -1032,7 +1378,7 @@ def get_practice(learner_id: int):
     learner = store.get_learner(learner_id)
     if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
-    discipline = learner.get("discipline") or "Science"
+    discipline = learner.get("discipline") or "Sciences"
     skill, level = weakest_skill(latest_scores(learner_id))
     items = practice_items_for(skill, level, discipline)
     set_id = uuid.uuid4().hex[:8]
@@ -1110,6 +1456,58 @@ def get_growth(learner_id: int):
         history.setdefault(row["skill_name"], []).append(
             {"score": row["score"], "date": row["date"]})
     return {"learner_id": learner_id, "scores": scores, "history": history}
+
+
+def independence(learner_id: int) -> dict:
+    """Hint-use trend across scaffold attempts: fewer hints = more independent.
+
+    Compares hint + "Show me now" uses in the most recent attempts against the
+    same number of attempts just before (up to 5 each side).
+    """
+    helps: dict[str, int] = {}
+    order: list[str] = []
+    for row in store.get_scaffold_events(learner_id):
+        match = re.search(r"attempt_id=(\S+)", row["result"] or "")
+        if not match:
+            continue
+        aid = match.group(1)
+        if aid not in helps:
+            helps[aid] = 0
+            order.append(aid)
+        if row["tool"] in ("hint", "show-me"):
+            helps[aid] += 1
+    if len(order) < 2:
+        return {"attempts": len(order), "recent_helps": sum(helps.values()),
+                "previous_helps": 0, "trend": "new",
+                "message": "Try a module task to start tracking."}
+    k = min(5, max(1, len(order) // 2))
+    recent, previous = order[-k:], order[-2 * k:-k]
+    recent_helps = sum(helps[a] for a in recent)
+    previous_helps = sum(helps[a] for a in previous)
+    if recent_helps == 0 and previous_helps == 0:
+        trend, message = "independent", \
+            "Fully independent: no hints in your recent tries."
+    elif recent_helps < previous_helps:
+        trend = "improving"
+        message = (f"Working more independently: {recent_helps} hints in your "
+                   f"last {k} {'tries' if k > 1 else 'try'}, down from {previous_helps}.")
+    elif recent_helps == previous_helps:
+        trend, message = "steady", \
+            f"Steady: {recent_helps} hints across your recent tries."
+    else:
+        trend, message = "more-help", \
+            (f"{recent_helps} hints in your last {k} "
+             f"{'tries' if k > 1 else 'try'}. Hints help you learn.")
+    return {"attempts": len(order), "recent_helps": recent_helps,
+            "previous_helps": previous_helps, "trend": trend, "message": message}
+
+
+@app.get("/independence")
+def get_independence(learner_id: int):
+    """Hint-use trend for the My Growth independence card."""
+    if store.get_learner(learner_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    return {"learner_id": learner_id, **independence(learner_id)}
 
 
 @app.post("/teacher/practice-sets")

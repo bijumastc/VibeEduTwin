@@ -57,14 +57,25 @@ export default function Write({ go }) {
             <p className="muted">Level {result.level}</p>
           </div>
           <div className="card">
-            <SkillBars scores={result.scores} weakest={result.weakest} />
+            <SkillBars scores={result.scores} weakest={result.weakest} levels={result.level_changes} />
           </div>
           <div className="card accent-soft">
             <div className="card-title">Your twin says</div>
             <p>{result.twin_note}</p>
           </div>
+          {result.comparison && (
+            <div className="card">
+              <div className="card-title">Your twin compares</div>
+              <p>{result.comparison}</p>
+            </div>
+          )}
           {result.learn && (
-            <LearnCard card={result.learn} onPractise={() => go('practice')} />
+            <LearnCard
+              title={`Learn: ${result.learn.skill}`}
+              rule={result.learn.rule}
+              example={result.learn.example}
+              onPractise={() => go('practice')}
+            />
           )}
           {result.study_material && result.study_material.length > 0 && (
             <div className="card">
