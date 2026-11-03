@@ -107,19 +107,32 @@ def test_diagnose_includes_learn_card(tmp_db, monkeypatch):
 
 # --- Discipline-aware practice ---------------------------------------------
 def test_practice_uses_learner_discipline(tmp_db, monkeypatch):
+    def rich_query(query, n_results=6):
+        docs = [f"Alpha point {i} names the topic first. Details follow it."
+                for i in range(n_results)]
+        metas = [{"source": f"book{i}.pdf", "chapter": f"Ch {i + 1}",
+                  "license": "CC BY"} for i in range(n_results)]
+        return docs, metas
+
+    monkeypatch.setattr(main, "_query_guides", rich_query)
     monkeypatch.setattr(main, "_model_api_key", lambda: None)  # no assessor
     learner_id = _learner(tmp_db, "Arts & Humanities")
     body = main.get_practice(learner_id)
     assert body["discipline"] == "Arts & Humanities"
     assert "variants" not in body["items"][0] and "answer" not in body["items"][0]
-    served = main.practice_items_for(body["skill"], body["level"], "Arts & Humanities")
-    assert body["items"][0]["prompt"] == served[0]["prompt"]
-    other = main.practice_items_for(body["skill"], body["level"], "Sciences")
-    assert served[0]["prompt"] != other[0]["prompt"]
-    answers = {it["id"]: it["answer"] for it in served}
+    kinds = [it.get("kind", it["type"]) for it in body["items"]]
+    assert kinds == ["recognise", "recognise", "repair", "produce", "produce",
+                     "apply"]
+    assert "the freedom struggle" in body["items"][3]["prompt"]
+    issued = main.ISSUED_SETS[body["set_id"]]
+    answers = {}
+    for it in issued["items"]:
+        answers[it["id"]] = it["answer"] if it["type"] != "write" else (
+            "The freedom struggle united towns that once stood far apart.")
     scored = main.post_answers(main.PracticeAnswersIn(
         learner_id=learner_id, set_id=body["set_id"], answers=answers))
     assert scored["accuracy"] == 100
+    assert all("assessment" in d for d in scored["details"])
 
 
 def test_practice_variants_keep_answers_valid():

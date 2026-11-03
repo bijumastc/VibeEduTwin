@@ -1874,7 +1874,8 @@ SPARK_PRACTICE_SYSTEM = (
     "problem and quoting the learner's answer; empty when the answer is "
     "fully correct), quote (exact words from the learner's answer), "
     "next_action (one sentence telling the learner what to do next) and "
-    "score (2 when correct, else 0 or 1). Never invent facts.")
+    "score (2 when a marked answer is correct, else 0 or 1; 0-2 for "
+    "written answers against the rubric). Never invent facts.")
 
 
 def _order_prompt_sentences(prompt: str) -> dict:
@@ -1913,17 +1914,41 @@ def _practice_assess_messages(skill: str, module_id: str, discipline: str,
     """One batch prompt: rubric plus every judged answer with its verdict."""
     rubric = [c.format(genre=DISCIPLINE_GENRES[discipline])
               for c in SCAFFOLD_RUBRICS[module_id]]
-    lines = [
-        f"A{i + 1} (id {ans['id']}): {ans['prompt']} "
-        f"Options: {' / '.join(ans['options'])} "
-        f"Learner answer: {ans['choice']} "
-        f"Correct: {'yes' if ans['correct'] else 'no'}."
-        for i, ans in enumerate(answers)]
+    lines = []
+    for i, ans in enumerate(answers):
+        if ans["closed"]:
+            lines.append(
+                f"A{i + 1} (id {ans['id']}): {ans['prompt']} "
+                f"Options: {' / '.join(ans['options'])} "
+                f"Learner answer: {ans['choice']} "
+                f"Correct: {'yes' if ans['correct'] else 'no'}.")
+        else:
+            lines.append(
+                f"A{i + 1} (id {ans['id']}, {ans['kind']}): {ans['task']} "
+                f"Learner text: {ans['choice']} Score 0-2 on the rubric.")
     user = (f"Skill: {skill}. "
             f"Rubric: {' '.join(f'{i + 1}. {c}' for i, c in enumerate(rubric))} "
             f"Judge each answer:\n" + "\n".join(lines))
     return [{"role": "system", "content": SPARK_PRACTICE_SYSTEM},
             {"role": "user", "content": user}]
+
+
+def _practice_write_template(text: str, topic_words: set[str]) -> dict:
+    """Deterministic free-text scoring: length plus topic mention."""
+    words = text.split()
+    if len(words) < 3:
+        return _practice_template_fields("", False, "")
+    quote = " ".join(words[:6])
+    topical = bool(set(re.findall(r"[a-z]+", text.lower())) & topic_words)
+    if len(words) >= 8 and topical:
+        return {"status": "ok",
+                "strength": f"Good try on the topic: \"{quote}\".",
+                "problem": "", "quote": quote,
+                "next_action": "Keep going.", "score": 2}
+    return {"status": "ok", "strength": "",
+            "problem": f"Needs more: \"{quote}\".", "quote": quote,
+            "next_action": "Write at least two full lines on the topic.",
+            "score": 1}
 
 
 def _practice_template_fields(choice: str, correct: bool, given: str) -> dict:
@@ -1946,27 +1971,51 @@ def _practice_template_fields(choice: str, correct: bool, given: str) -> dict:
 
 def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
                         answers: dict) -> dict:
-    """{item_id: assessment}: one Spark batch, templates for the rest."""
-    module_id = SKILL_MODULE.get(skill)
+    """{item_id: assessment}: one Spark batch per module, templates for rest.
+
+    Closed answers are checked exactly; write answers are free text scored
+    0-2. ok means correct (closed) or score 2 (write).
+    """
+    learner = store.get_learner(learner_id) or {}
+    discipline = learner.get("discipline") or "Sciences"
+    topic_words = (set(re.findall(
+        r"[a-z]+", DISCIPLINE_TOPICS[discipline].lower())) - _STOPWORDS)
     judged: dict[str, tuple] = {}
-    sparkable = []
+    sparkable: list[dict] = []
     for item in items:
         given = answers.get(item["id"], "")
-        ok = check_answer(item, given)
-        choice = _practice_answer_text(item, given)
-        if not choice or module_id is None:
-            judged[item["id"]] = (choice, ok, _practice_template_fields(
-                choice, ok, (given or "").strip()))
+        iskill = item.get("skill", skill)
+        module_id = item.get("module") or SKILL_MODULE.get(iskill)
+        if item.get("type") == "write":
+            text = (given or "").strip()
+            if len(text.split()) < 3 or module_id is None:
+                fields = _practice_write_template(text, topic_words)
+                judged[item["id"]] = (fields["score"] == 2, fields,
+                                      module_id, iskill)
+            else:
+                sparkable.append({"id": item["id"], "closed": False,
+                                  "kind": item.get("kind", "write"),
+                                  "task": item["prompt"], "choice": text,
+                                  "skill": iskill, "module": module_id})
         else:
-            sparkable.append({"id": item["id"], "prompt": item["prompt"],
-                              "options": item["options"], "choice": choice,
-                              "correct": ok})
-    if sparkable:
-        learner = store.get_learner(learner_id) or {}
-        discipline = learner.get("discipline") or "Sciences"
+            ok = check_answer(item, given)
+            choice = _practice_answer_text(item, given)
+            if not choice or module_id is None:
+                judged[item["id"]] = (ok, _practice_template_fields(
+                    choice, ok, (given or "").strip()), module_id, iskill)
+            else:
+                sparkable.append({"id": item["id"], "closed": True,
+                                  "prompt": item["prompt"],
+                                  "options": item["options"], "choice": choice,
+                                  "correct": ok, "skill": iskill,
+                                  "module": module_id})
+    by_module: dict[str, list[dict]] = {}
+    for ans in sparkable:
+        by_module.setdefault(ans["module"], []).append(ans)
+    for module_id, group in by_module.items():
         try:
             raw = _spark_chat(_practice_assess_messages(
-                skill, module_id, discipline, sparkable))
+                group[0]["skill"], module_id, discipline, group))
             data = json.loads(raw)
             drafts = {d["id"]: d for d in data
                       if isinstance(d, dict) and "id" in d} \
@@ -1974,11 +2023,12 @@ def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
         except (SparkError, ValueError):
             drafts = {}
         rejected = []
-        for ans in sparkable:
+        for ans in group:
             fields = _validate_assessment(drafts.get(ans["id"], {}))
             if fields is not None and (
                     fields["status"] != "ok"
-                    or (fields["score"] == 2) != ans["correct"]):
+                    or (ans["closed"]
+                        and (fields["score"] == 2) != ans["correct"])):
                 fields = None
             if fields is not None:
                 feedback = _assessment_feedback(fields)
@@ -1991,26 +2041,44 @@ def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
                     fields = None
             if fields is None:
                 given = answers.get(ans["id"], "")
-                fields = _practice_template_fields(
-                    ans["choice"], ans["correct"], (given or "").strip())
-            judged[ans["id"]] = (ans["choice"], ans["correct"], fields)
+                if ans["closed"]:
+                    fields = _practice_template_fields(
+                        ans["choice"], ans["correct"], (given or "").strip())
+                else:
+                    fields = _practice_write_template(ans["choice"], topic_words)
+            ok = ans["correct"] if ans["closed"] else fields["score"] == 2
+            judged[ans["id"]] = (ok, fields, module_id, ans["skill"])
         if rejected:
             store.log_event(learner_id, "Practise", "twin", "verify-assess",
                             f"items rejected: {rejected}")
     out = {}
     wrongs = 0
     for item in items:
-        _choice, ok, fields = judged[item["id"]]
+        ok, fields, module_id, iskill = judged[item["id"]]
         if not ok and wrongs >= 2 and module_id is not None:
             next_step: str = "study"
         else:
             next_step = "next"
         if not ok:
             wrongs += 1
-        out[item["id"]] = {"feedback": _assessment_feedback(fields),
+        out[item["id"]] = {"ok": ok, "feedback": _assessment_feedback(fields),
                            "score": fields["score"], "next_step": next_step,
-                           "module": module_id, "skill": skill}
+                           "module": module_id, "skill": iskill}
     return out
+
+
+def _mastery_move_up(learner_id: int, skill: str) -> bool:
+    """Two sets at 80%+ move the skill to the next level floor."""
+    rows = store.get_practice_results(learner_id, skill)[-MASTERY_SETS:]
+    if len(rows) < MASTERY_SETS or any(
+            r["accuracy"] < MASTERY_ACCURACY for r in rows):
+        return False
+    current = latest_scores(learner_id).get(skill, 0)
+    if level_for_score(current) >= 5:
+        return False
+    store.save_skill_scores(
+        learner_id, {skill: 20 * level_for_score(current)})
+    return True
 
 
 # --- Heuristic skill scorers (demo logic; Muse Spark plugs in here) -----------------
@@ -3609,12 +3677,214 @@ def post_scaffold_rewrite(data: ScaffoldRewriteIn):
     return _scaffold_view(attempt_id, attempt, extra)
 
 
+# --- Practice sets: 4 item types ------------------------------------------------
+# Each set for a moduled skill mixes recognise (best example from excerpts),
+# repair (fix a weak line), produce (write on a topic) and apply (write in
+# the discipline genre). Closed answers are letters; repair/produce/apply are
+# free text judged by the Practice Assessor. Teachers' published sets win;
+# unmoduled skills and thin libraries fall back to the bank. Every third set
+# is a mixed review of earlier modules; two sets at 80%+ move the skill up.
+PRACTICE_SET_SIZE = 6
+PRACTICE_COMPOSITION = ("recognise", "recognise", "repair", "produce",
+                        "produce", "apply")
+MASTERY_ACCURACY = 80
+MASTERY_SETS = 2
+REVIEW_EVERY = 3
+
+PRACTICE_LABELS = {
+    "topic-sentences": "topic sentence",
+    "thesis-statements": "thesis statement",
+    "developing-paragraphs": "supporting line",
+    "coherence-flow": "continuing line",
+    "using-sources": "sourced line",
+    "genre": "{genre} opening",
+}
+
+# Deliberately weak lines to repair ({topic} {genre}). These are the task,
+# never presented as examples, so they are authored, not retrieved.
+WEAK_REPAIRS = {
+    "topic-sentences": ["There are many things about {topic}.",
+                        "{topic} is very interesting and nice.",
+                        "I will tell you about {topic} now."],
+    "thesis-statements": ["{topic} is a topic people talk about.",
+                          "I like {topic} a lot these days.",
+                          "This essay is about {topic} and other things."],
+    "developing-paragraphs": ["{topic} is good and nice.",
+                              "There is a lot to say here.",
+                              "It matters in many ways."],
+    "coherence-flow": ["{topic} is big. It rains a lot.",
+                       "I saw {topic}. Then I ate lunch.",
+                       "{topic} started. Nobody knows why."],
+    "using-sources": ["People say {topic} is good.",
+                      "Everyone knows about {topic}.",
+                      "I heard that {topic} matters."],
+    "genre": ["This {genre} is about {topic} and stuff.",
+              "Hello, this is my {genre}.",
+              "{topic} is the best, trust me."],
+}
+
+
+def _practice_rubric_line(module_id: str, discipline: str) -> str:
+    """The module rubric as one guidance line for write items."""
+    rubric = [c.format(genre=DISCIPLINE_GENRES[discipline])
+              for c in SCAFFOLD_RUBRICS[module_id]]
+    return "Rubric: " + " ".join(rubric)
+
+
+def _recognise_item(module: dict, skill: str, discipline: str, level: int,
+                    num: int, pool: list, dpool: list[str]) -> dict | None:
+    """Best-example choice: a claim sentence among distractors, or None."""
+    claims = LESSON_IDEA_CLAIMS.get(module["id"], [])
+    best = None
+    for doc, meta in pool:
+        for sent in clean_sentences(doc):
+            if any(k.lower() in sent.lower() for claim in claims
+                   for k in claim["keywords"]):
+                best = (sent, meta or {})
+                break
+        if best is not None:
+            break
+    if best is None:
+        return None
+    sentence, meta = best
+    same = [s for d, _ in pool for s in clean_sentences(d) if s != sentence]
+    others = [s for s in dpool if s != sentence]
+    want = 3 if level >= 3 else 2
+    first, second = (same, others) if level >= 3 else (others, same)
+    distractors = []
+    for sent in first + second:
+        if sent not in distractors:
+            distractors.append(sent)
+        if len(distractors) == want:
+            break
+    if len(distractors) < 2:
+        return None
+    options = [sentence, *distractors]
+    options = options[num % len(options):] + options[:num % len(options)]
+    letters = "ABCD"[:len(options)]
+    lettered = [f"{letter}) {s}" for letter, s in zip(letters, options)]
+    source, chapter, license = _teacher_source(meta)
+    label = PRACTICE_LABELS[module["id"]].format(
+        genre=DISCIPLINE_GENRES[discipline])
+    return {"id": f"g{num + 1}", "type": "mcq", "kind": "recognise",
+            "prompt": f"Which is the best {label}?",
+            "options": lettered, "answer": letters[options.index(sentence)],
+            "explanation": _teacher_explanation(skill, meta),
+            "source": source, "chapter": chapter, "license": license,
+            "skill": skill, "module": module["id"]}
+
+
+def _write_item(kind: str, module: dict, skill: str, discipline: str,
+                level: int, num: int) -> dict:
+    """A repair/produce/apply item: free text judged against the rubric."""
+    topic = DISCIPLINE_TOPICS[discipline]
+    genre = DISCIPLINE_GENRES[discipline]
+    label = PRACTICE_LABELS[module["id"]].format(genre=genre)
+    if kind == "repair":
+        lines = [w.format(topic=topic, genre=genre)
+                 for w in WEAK_REPAIRS[module["id"]]]
+        if level >= 3:
+            prompt = f"Fix this weak paragraph: \"{' '.join(lines)}\""
+        else:
+            prompt = f"Fix this weak line: \"{lines[num % len(lines)]}\""
+    elif kind == "produce":
+        prompt = f"Write one {label} about {topic}."
+    else:
+        prompt = (f"Write {2 if level < 3 else 4} lines for your {genre} "
+                  f"about {topic}.")
+    return {"id": f"g{num + 1}", "type": "write", "kind": kind, "prompt": prompt,
+            "options": [], "answer": "",
+            "explanation": _practice_rubric_line(module["id"], discipline),
+            "source": "", "skill": skill, "module": module["id"]}
+
+
+def _module_pool(module: dict, discipline: str, genre: str,
+                 n_results: int = 6) -> list:
+    """Example excerpts for one module (docs with metas, blanks dropped)."""
+    docs, metas = _query_guides(module_example_query(module, genre),
+                                n_results=n_results)
+    return [(d, m or {}) for d, m in zip(docs, metas) if (d or "").strip()]
+
+
+def _generated_practice_set(skill: str, module_id: str, discipline: str,
+                            level: int) -> list[dict]:
+    """6 mixed items for a module; the bank fills any gap."""
+    modules = {m["id"]: m for m in discipline_modules(discipline)}
+    module = modules[module_id]
+    genre = DISCIPLINE_GENRES[discipline]
+    pool = _module_pool(module, discipline, genre)
+    dpool: list[str] = []
+    for other in [m for m in discipline_modules(discipline)
+                  if m["id"] != module_id][:2]:
+        for doc, _ in _module_pool(other, discipline, genre, n_results=2):
+            dpool.extend(_excerpt_sentences(doc))
+    items = []
+    for num, kind in enumerate(PRACTICE_COMPOSITION):
+        if kind == "recognise":
+            item = _recognise_item(module, skill, discipline, level, num,
+                                   pool, dpool)
+        else:
+            item = _write_item(kind, module, skill, discipline, level, num)
+        if item is not None:
+            items.append(item)
+    if len(items) < PRACTICE_SET_SIZE:
+        for bank in practice_items_for(skill, level, discipline):
+            if len(items) >= PRACTICE_SET_SIZE:
+                break
+            fill = dict(bank)
+            fill["skill"] = skill
+            fill["module"] = SKILL_MODULE.get(skill)
+            items.append(fill)
+    for i, item in enumerate(items):
+        item["id"] = f"g{i + 1}"
+    return items
+
+
+def _earlier_modules(discipline: str, scores: dict) -> list[dict]:
+    """Modules before the learner's current one, in unlock order."""
+    states = module_states(discipline, scores)
+    idx = next((i for i, s in enumerate(states) if s.get("current")), 0)
+    return states[max(0, idx - 3):idx]
+
+
+def _review_set(discipline: str, level: int, earlier: list[dict],
+                skill: str) -> list[dict]:
+    """Recognise items, two per earlier module (bank fills any gap)."""
+    genre = DISCIPLINE_GENRES[discipline]
+    modules = {m["id"]: m for m in discipline_modules(discipline)}
+    pools = {s["id"]: _module_pool(modules[s["id"]], discipline, genre)
+             for s in earlier}
+    dpool = [s for pool in pools.values() for d, _ in pool
+             for s in _excerpt_sentences(d)]
+    items: list[dict] = []
+    num = 0
+    for state in earlier:
+        for _ in range(2):
+            item = _recognise_item(modules[state["id"]], state["skill"],
+                                   discipline, level, num,
+                                   pools[state["id"]], dpool)
+            num += 1
+            if item is not None:
+                items.append(item)
+    for bank in practice_items_for(skill, level, discipline):
+        if len(items) >= PRACTICE_SET_SIZE:
+            break
+        fill = dict(bank)
+        fill["skill"] = skill
+        fill["module"] = SKILL_MODULE.get(skill)
+        items.append(fill)
+    for i, item in enumerate(items):
+        item["id"] = f"g{i + 1}"
+    return items
+
+
 @app.get("/practice")
 def get_practice(learner_id: int):
     """Practise step: a short set for the weakest skill and level (no answers).
 
-    A published teacher set wins when one matches skill + level (+ discipline);
-    otherwise items come from the bank, using the learner's discipline.
+    A published teacher set wins when one matches skill + level (+ discipline).
+    Otherwise a moduled skill gets a generated 4-type set, or a mixed review
+    every third set when earlier modules exist; the bank covers the rest.
     """
     learner = store.get_learner(learner_id)
     if learner is None:
@@ -3622,6 +3892,14 @@ def get_practice(learner_id: int):
     discipline = learner.get("discipline") or "Sciences"
     skill, level = weakest_skill(latest_scores(learner_id))
     published = store.get_teacher_set(skill, level, discipline)
+    review: list[dict] | None = None
+    if not published:
+        count = sum(1 for r in store.get_events(learner_id)
+                    if r["tool"] == "get_practice")
+        if count % REVIEW_EVERY == REVIEW_EVERY - 1:
+            earlier = _earlier_modules(discipline, latest_scores(learner_id))
+            if len(earlier) >= 2:
+                review = earlier
     if published:
         items = [it for it in published["items"]
                  if verify("practice_item", it)["pass"]]
@@ -3630,7 +3908,12 @@ def get_practice(learner_id: int):
                             f"dropped {len(published['items']) - len(items)} failed items")
         if not items:  # every published item failed -> fall back to the bank
             published = None
-    if not published:
+    if review is not None:
+        items = _review_set(discipline, level, review, skill)
+    elif not published and SKILL_MODULE.get(skill) is not None:
+        items = _generated_practice_set(skill, SKILL_MODULE[skill], discipline,
+                                        level)
+    elif not published:
         items = [it for it in practice_items_for(skill, level, discipline)
                  if verify("practice_item", it,
                            rules=PRACTICE_STRUCTURAL_RULES)["pass"]]
@@ -3648,20 +3931,23 @@ def get_practice(learner_id: int):
     ISSUED_SETS[set_id] = {"learner_id": learner_id, "skill": skill,
                            "level": level, "discipline": discipline,
                            "published": published is not None,
+                           "review": review is not None,
                            "items": items,
                            "answers": {it["id"]: it["answer"] for it in items}}
     public = [{k: v for k, v in it.items() if k not in ("answer", "variants")}
               for it in items]
     store.log_event(learner_id, "Practise", "twin", "get_practice",
                     f"set_id={set_id} skill={skill} level={level} items={len(items)}")
-    return {"set_id": set_id, "learner_id": learner_id, "skill": skill,
+    return {"set_id": set_id, "learner_id": learner_id,
+            "skill": "Mixed review" if review is not None else skill,
             "level": level, "discipline": discipline,
-            "published": published is not None, "items": public}
+            "published": published is not None,
+            "review": review is not None, "items": public}
 
 
 @app.post("/practice/answers")
 def post_answers(data: PracticeAnswersIn):
-    """Score submitted answers; assess each and bump the skill per answer."""
+    """Score submitted answers; assess each; mastery moves skills up."""
     issued = ISSUED_SETS.get(data.set_id)
     if issued is None or issued["learner_id"] != data.learner_id:
         raise HTTPException(status_code=404, detail="Unknown or foreign set_id")
@@ -3670,12 +3956,15 @@ def post_answers(data: PracticeAnswersIn):
         skill, issued["level"], issued.get("discipline"))
     judged = _judge_practice_set(data.learner_id, skill, items, data.answers)
     details: list[dict] = []
-    correct = bump_total = 0
+    correct = 0
+    per_skill: dict[str, list[int]] = {}
     for item in items:
-        ok = check_answer(item, data.answers.get(item["id"], ""))
-        correct += ok
         got = judged[item["id"]]
-        bump_total += ASSESS_BUMPS[got["score"]]
+        ok = got["ok"]
+        correct += ok
+        hits = per_skill.setdefault(got["skill"], [0, 0])
+        hits[0] += ok
+        hits[1] += 1
         details.append({"id": item["id"], "correct": ok,
                         "explanation": item["explanation"] if not ok else "",
                         "assessment": {"feedback": got["feedback"],
@@ -3684,19 +3973,25 @@ def post_answers(data: PracticeAnswersIn):
                                        "module": got["module"]}})
     total = len(items)
     accuracy = round(100 * correct / total) if total else 0
-    current = latest_scores(data.learner_id).get(skill, 0)
-    new_score: float | None = None
-    if bump_total:
-        new_score = min(100, current + bump_total)
-        store.save_skill_scores(data.learner_id, {skill: new_score})
-    leveled_up = new_score is not None \
-        and level_for_score(new_score) > level_for_score(current)
+    mastery: dict[str, bool] = {}
+    moved: dict[str, float] = {}
+    for iskill, (hit, count) in per_skill.items():
+        store.save_practice_result(
+            data.learner_id, iskill, round(100 * hit / count))
+        if _mastery_move_up(data.learner_id, iskill):
+            mastery[iskill] = True
+            moved[iskill] = latest_scores(data.learner_id)[iskill]
+        else:
+            mastery[iskill] = False
+    new_score: float | None = max(moved.values()) if moved else None
     store.log_event(data.learner_id, "Practise", "twin", "score_answers",
-                    f"set_id={data.set_id} {correct}/{total} leveled_up={leveled_up}")
+                    f"set_id={data.set_id} {correct}/{total} "
+                    f"leveled_up={bool(moved)}")
     store.log_event(data.learner_id, "Practise", "twin", "assess",
-                    f"assessed {total} answers, +{bump_total} {skill}")
+                    f"assessed {total} answers")
     return {"correct": correct, "total": total, "accuracy": accuracy,
-            "skill": skill, "new_score": new_score, "leveled_up": leveled_up,
+            "skill": skill, "new_score": new_score,
+            "leveled_up": bool(moved), "mastery": mastery,
             "details": details}
 
 

@@ -5,11 +5,20 @@ import TwinPanel from '../components/TwinPanel.jsx';
 
 // Practice: one item at a time, tap to answer, score at the end.
 // Each answer carries the twin's assessment; repeated wrongs offer Learn.
+// Repair/produce/apply items are free text; recognise items are choices.
+const KIND_LABELS = {
+  recognise: 'Choose the best',
+  repair: 'Repair this',
+  produce: 'Write your own',
+  apply: 'Apply it',
+};
+
 export default function Practice({ go }) {
   const [set, setSet] = useState(null);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [picked, setPicked] = useState('');
+  const [draft, setDraft] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [twinOpen, setTwinOpen] = useState(false);
@@ -20,6 +29,7 @@ export default function Practice({ go }) {
     setSet(null);
     setAnswers({});
     setIndex(0);
+    setDraft('');
     api.getPractice().then(setSet).catch((err) => setError(err.message));
   };
 
@@ -35,6 +45,11 @@ export default function Practice({ go }) {
     }
   };
 
+  const advance = (next) => {
+    if (index + 1 < set.items.length) setIndex(index + 1);
+    else finish(next);
+  };
+
   const choose = (option) => {
     if (picked) return; // ignore double taps while advancing
     const item = set.items[index];
@@ -47,9 +62,16 @@ export default function Practice({ go }) {
     setPicked(option);
     setTimeout(() => {
       setPicked('');
-      if (index + 1 < set.items.length) setIndex(index + 1);
-      else finish(next);
+      advance(next);
     }, 350);
+  };
+
+  const saveWrite = () => {
+    const item = set.items[index];
+    const next = { ...answers, [item.id]: draft.trim() };
+    setAnswers(next);
+    setDraft('');
+    advance(next);
   };
 
   if (error) return <div><h2>Practice</h2><div className="error">{error}</div></div>;
@@ -88,19 +110,31 @@ export default function Practice({ go }) {
   return (
     <div>
       <h2>Practice: {set.skill}</h2>
-      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}{set.discipline ? ` · ${set.discipline}` : ''}{set.published ? ' · Teacher set' : ''}</div>
+      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}{set.discipline ? ` · ${set.discipline}` : ''}{set.published ? ' · Teacher set' : ''}{set.review ? ' · Review set' : ''}</div>
       <div className="card">
+        {item.kind && <p className="muted">{KIND_LABELS[item.kind] || item.kind}</p>}
         <p>{item.prompt}</p>
       </div>
-      {item.options.map((option) => (
-        <button
-          key={option}
-          className={`btn secondary option-btn${picked === option ? ' picked' : ''}`}
-          onClick={() => choose(option)}
-        >
-          {option}
-        </button>
-      ))}
+      {item.type === 'write' ? (
+        <>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Write here…"
+          />
+          <button className="btn" onClick={saveWrite}>Save & continue</button>
+        </>
+      ) : (
+        item.options.map((option) => (
+          <button
+            key={option}
+            className={`btn secondary option-btn${picked === option ? ' picked' : ''}`}
+            onClick={() => choose(option)}
+          >
+            {option}
+          </button>
+        ))
+      )}
       <button className="twin-fab" onClick={() => setTwinOpen(true)}>Ask my Twin</button>
       {twinOpen && <TwinPanel screen="practice" onClose={() => setTwinOpen(false)} />}
     </div>

@@ -49,7 +49,7 @@ def _score(learner_id, set_id, answers):
         learner_id=learner_id, set_id=set_id, answers=answers))
 
 
-def test_correct_answers_scored_and_bumped(tmp_db, monkeypatch):
+def test_correct_answers_scored_without_level_move(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "_model_api_key", lambda: None)
     learner_id = _learner(tmp_db)
     set_id = _issue(learner_id, [MCQ, ORDER])
@@ -59,8 +59,9 @@ def test_correct_answers_scored_and_bumped(tmp_db, monkeypatch):
     assert by_id["a1"]["assessment"]["score"] == 2
     assert "Rivers run fast." in by_id["a1"]["assessment"]["feedback"]
     assert "Fish swim deep." in by_id["a2"]["assessment"]["feedback"]
-    assert scored["new_score"] == 20
-    assert store.get_skill_scores(learner_id)[-1]["score"] == 20
+    assert scored["new_score"] is None  # one set cannot move mastery
+    assert scored["mastery"] == {"Paragraphing": False}
+    assert store.get_skill_scores(learner_id) == []
     rows = [r for r in store.get_events(learner_id) if r["tool"] == "assess"]
     assert len(rows) == 1 and "assessed 2 answers" in rows[0]["result"]
 
@@ -113,7 +114,7 @@ def test_spark_batch_judges_whole_set_once(tmp_db, monkeypatch):
     assert "Start from the river" in by_id["a2"]["assessment"]["feedback"]
     assert (by_id["a1"]["assessment"]["score"],
             by_id["a2"]["assessment"]["score"]) == (2, 1)
-    assert scored["new_score"] == 15
+    assert scored["new_score"] is None
 
 
 def test_spark_garbage_falls_back_to_template(tmp_db, monkeypatch):

@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS teacher_sets (
     request TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS practice_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    learner_id INTEGER NOT NULL REFERENCES learners(id),
+    skill_name TEXT NOT NULL,
+    accuracy REAL NOT NULL,
+    date TEXT NOT NULL
+);
 """
 
 
@@ -169,6 +176,27 @@ def get_skill_scores(learner_id: int) -> list[dict]:
             "SELECT skill_name, score, date FROM skill_scores"
             " WHERE learner_id = ? ORDER BY date, id",
             (learner_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def save_practice_result(learner_id: int, skill: str, accuracy: float) -> None:
+    """Stamp one set accuracy for mastery tracking."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO practice_results (learner_id, skill_name, accuracy,"
+            " date) VALUES (?, ?, ?, ?)",
+            (learner_id, skill, float(accuracy), date.today().isoformat()),
+        )
+
+
+def get_practice_results(learner_id: int, skill: str) -> list[dict]:
+    """Accuracy history for a skill, oldest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT accuracy, date FROM practice_results"
+            " WHERE learner_id = ? AND skill_name = ? ORDER BY date, id",
+            (learner_id, skill),
         ).fetchall()
         return [dict(r) for r in rows]
 
