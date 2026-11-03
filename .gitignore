@@ -11,3 +11,5 @@ data/knowledge/*.pdf
 
 node_modules/
 frontend/dist/
+
+*.tmp
