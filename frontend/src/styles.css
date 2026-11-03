@@ -20,7 +20,10 @@
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: "Noto Sans", "Noto Sans Malayalam", "Noto Sans Tamil",
+    "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Devanagari",
+    "Noto Sans Bengali", "Noto Sans Gujarati", "Noto Sans Gurmukhi",
+    "Noto Sans Oriya", system-ui, -apple-system, "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--bg);
   font-size: 17px;

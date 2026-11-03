@@ -65,9 +65,14 @@ def _utcnow() -> str:
 
 
 def _connect() -> sqlite3.Connection:
-    """Open the database, creating the file and tables on first use."""
+    """Open the database, creating the file and tables on first use.
+
+    TEXT is stored and returned as UTF-8 so Indic scripts round-trip intact.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row  # rows behave like dicts
+    conn.text_factory = str  # decode TEXT columns as UTF-8 str, never bytes
+    conn.execute('PRAGMA encoding = "UTF-8"')
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)  # no-op once tables exist
     return conn

@@ -20,12 +20,15 @@ Run:
   .venv\\Scripts\\python.exe main.py                          (direct)
 """
 
+import json
 import re
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import learner_store as store
@@ -61,7 +64,25 @@ SKILL_BUMP = 10        # points added to a skill after a strong practice set
 # In-memory for the demo; a real deployment would persist these.
 ISSUED_SETS: dict = {}
 
-app = FastAPI(title="VibeEduTwin")
+class UTF8JSONResponse(JSONResponse):
+    """JSON responses as raw UTF-8 with an explicit charset.
+
+    ensure_ascii=False keeps Indic scripts (Malayalam, Tamil, ...) as
+    readable UTF-8 instead of \\uXXXX escapes.
+    """
+    media_type = "application/json; charset=utf-8"
+
+    def render(self, content) -> bytes:
+        return json.dumps(
+            jsonable_encoder(content),
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+
+app = FastAPI(title="VibeEduTwin", default_response_class=UTF8JSONResponse)
 
 # Let the Vite dev server (port 5173) call this API from the browser.
 app.add_middleware(
