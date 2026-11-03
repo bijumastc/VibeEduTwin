@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import Home from './screens/Home.jsx';
 import Write from './screens/Write.jsx';
+import Learn from './screens/Learn.jsx';
 import Practice from './screens/Practice.jsx';
-import MyWriting from './screens/MyWriting.jsx';
 import MyGrowth from './screens/MyGrowth.jsx';
 import BottomNav from './components/BottomNav.jsx';
 
@@ -22,9 +22,9 @@ export default function App() {
       </header>
       <main className="screen">
         {tab === 'home' && <Home go={go} />}
-        {tab === 'write' && <Write />}
+        {tab === 'write' && <Write go={go} />}
+        {tab === 'learn' && <Learn go={go} />}
         {tab === 'practice' && <Practice />}
-        {tab === 'writing' && <MyWriting go={go} />}
         {tab === 'growth' && <MyGrowth go={go} />}
       </main>
       <BottomNav tab={tab} go={go} />

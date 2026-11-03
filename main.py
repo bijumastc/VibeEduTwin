@@ -3,8 +3,10 @@
 Loop: Write -> Diagnose -> Bridge -> Practise -> Grow.
 
 Endpoints:
+  POST /learners             sign up a learner (name + discipline)
   POST /drafts               save a learner paragraph
   POST /diagnose             score a draft on 7 skills, find the weakest
+  GET  /learn                Learn card for one skill (rule + examples)
   GET  /practice             practice set for the weakest skill + level
   POST /practice/answers     score answers, bump the skill if they did well
   POST /level-check          report current levels and recent level-ups
@@ -35,19 +37,26 @@ import learner_store as store
 
 # --- Twin system prompt ---------------------------------------------------------
 # Used by every LLM call once Muse Spark is wired in. The twin speaks as the
-# learner's future self, guides instead of answering, and bridges from Malayalam.
+# learner's future self, guides instead of answering, in simple English only.
 TWIN_SYSTEM_PROMPT = (
     "You are the learner's future self: a confident student who once found "
     "English writing hard and now writes well. Speak warmly, in first person, "
-    "as someone who remembers the struggle. NEVER write full answers, "
+    "as someone who remembers the struggle. Reply ONLY in simple, short "
+    "English: basic words, short sentences. Never write in Malayalam or any "
+    "other language. Every word you write must be simple English. "
+    "NEVER write full answers, "
     "paragraphs, or essays for the learner - only hints, questions, and tiny "
-    "examples they must complete themselves. When an English idea is hard, "
-    "bridge from the mother tongue: give the Malayalam meaning first, then "
-    "the English pattern. Be honest, never sycophantic. No generic praise: "
+    "examples they must complete themselves. If the learner writes in any "
+    "language except English, first reflect their idea back in "
+    "simple English starting with 'You are saying that...', then give one "
+    "English sentence starter for them to complete. Be honest, never "
+    "sycophantic. No generic praise: "
     "never write 'great job', 'excellent', 'amazing', or any other empty "
     "compliment. Praise only when you can name the exact improvement, "
     "compared with the previous draft. Always state the main problem first, "
-    "plainly and kindly, quoting the learner's own words. Never call weak "
+    "plainly and kindly, quoting the learner's own English words, or "
+    "reflecting their idea in simple English when they did not write in "
+    "English. Never call weak "
     "writing good. Use at most one positive sentence per reply. Keep every "
     "reply to 2-4 short sentences."
 )
@@ -94,6 +103,14 @@ app.add_middleware(
 
 
 # --- Request models ---------------------------------------------------------------
+class LearnerIn(BaseModel):
+    name: str = Field(min_length=1, description="The learner's name")
+    year: str = "10"
+    subject: str = "English"
+    language: str = "Malayalam"
+    discipline: str = Field(description="Science, Humanities, or Commerce")
+
+
 class DraftIn(BaseModel):
     learner_id: int
     content: str = Field(min_length=1, description="The learner's paragraph")
@@ -154,9 +171,8 @@ def weakest_skill(scores: dict[str, float]) -> tuple[str, int]:
 def twin_note(weakest: str) -> str:
     """Short future-self note in the twin's voice (template until LLM lands)."""
     return (
-        f"I used to lose marks on {weakest.lower()} too. "
-        f"Let's fix one small pattern today - \u0d1a\u0d3f\u0d31\u0d3f\u0d2f\u0d4d "
-        f"(chെറിയ, small) steps first, then we build up."
+        f"I found {weakest.lower()} hard too. "
+        f"Let's fix one small part today."
     )
 
 
@@ -165,8 +181,11 @@ def twin_note(weakest: str) -> str:
 SCRIPTS_KB_COLLECTION = "vibeedutwin_knowledge"
 
 
-def study_material(skill: str, n_results: int = 2) -> list[dict]:
-    """Pull guide snippets for a skill from either KB collection; [] if unavailable."""
+def _query_guide_chunks(skill: str, n_results: int = 2) -> tuple[list, list]:
+    """Raw (documents, metadatas) for a skill from either KB collection.
+
+    Returns ([], []) when no guides are ingested yet.
+    """
     try:
         import knowledge_base as kb  # local import: only needed here
 
@@ -183,16 +202,130 @@ def study_material(skill: str, n_results: int = 2) -> list[dict]:
             result = collection.query(
                 query_texts=[f"{skill} academic writing"], n_results=n_results
             )
-            docs = result.get("documents", [[]])[0]
-            metas = result.get("metadatas", [[]])[0]
-            return [
-                {"source": m.get("source"), "skill": m.get("skill"),
-                 "license": m.get("license"), "text": (d or "")[:400]}
-                for d, m in zip(docs, metas)
-            ]
-        return []
+            return (result.get("documents", [[]])[0],
+                    result.get("metadatas", [[]])[0])
+        return [], []
     except Exception:
-        return []  # no guides ingested yet -> practise without material
+        return [], []  # no guides ingested yet
+
+
+def study_material(skill: str, n_results: int = 2) -> list[dict]:
+    """Pull guide snippets for a skill from either KB collection; [] if unavailable."""
+    docs, metas = _query_guide_chunks(skill, n_results)
+    return [
+        {"source": m.get("source"), "skill": m.get("skill"),
+         "license": m.get("license"), "text": (d or "")[:400]}
+        for d, m in zip(docs, metas)
+    ]
+
+
+def first_sentences(text: str, n: int = 3) -> str:
+    """Trim text to its first n sentences for a short Learn card rule."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", (text or "").strip())]
+    return " ".join(p for p in parts[:n] if p)
+
+
+# Fallback rules (original text, CC BY) when no guides are ingested yet.
+FALLBACK_RULES = {
+    "Grammar": ("Every sentence needs a subject and a verb that agree. "
+                "With he, she, or it, the verb ends in -s: she writes, it rains."),
+    "Vocabulary": ("One precise word beats three vague ones. "
+                   "Swap weak words like 'nice' for exact ones like 'persuasive'."),
+    "Sentence structure": ("Join short related sentences with because, but, or when. "
+                           "If a sentence runs past 25 words, split it in two."),
+    "Paragraphing": ("One paragraph makes one point: topic sentence first, "
+                     "details next, closing line last. Cut any sentence that does "
+                     "not support the topic sentence."),
+    "Argument": ("An argument is a claim plus a reason: state your view, then prove "
+                 "it with because, evidence, or an example. No reason word, no argument."),
+    "Using sources": ("Borrow ideas openly: name the source with 'According to...' "
+                      "and use your own words. Copying without credit is plagiarism."),
+    "Academic tone": ("Academic writing is calm: avoid chatty words like 'very' "
+                      "and 'thing'. Soften strong claims with 'suggests' and 'may'."),
+}
+
+# One good + one weak example per skill, written for each discipline:
+# a lab report sentence (Science), an essay sentence (Humanities),
+# a business report sentence (Commerce).
+DISCIPLINE_EXAMPLES: dict[str, dict[str, dict[str, str]]] = {
+    "Grammar": {
+        "Science": {"good": "The solution boils at 100°C and turns into steam.",
+                    "weak": "The solution boil at 100°C and turn into steam."},
+        "Humanities": {"good": "The article discusses the causes of the revolt.",
+                       "weak": "The article discuss the causes of the revolt."},
+        "Commerce": {"good": "The report shows a sharp rise in sales.",
+                     "weak": "The report show a sharp rise in sales."},
+    },
+    "Vocabulary": {
+        "Science": {"good": "We recorded a significant change in temperature.",
+                    "weak": "We got a very big change in temperature."},
+        "Humanities": {"good": "The essay presents several significant ideas.",
+                       "weak": "The essay has a lot of really nice ideas."},
+        "Commerce": {"good": "Profits increased significantly this quarter.",
+                     "weak": "Profits went up by a very big amount."},
+    },
+    "Sentence structure": {
+        "Science": {"good": "When the flask cracked, we stopped heating.",
+                    "weak": "We heated the flask. It cracked. We stopped."},
+        "Humanities": {"good": "A war broke out because the king died without an heir.",
+                       "weak": "The king died. There was a war. Many suffered."},
+        "Commerce": {"good": "The firm lost money because sales fell while costs rose.",
+                     "weak": "Sales fell. Costs rose. The firm lost money."},
+    },
+    "Paragraphing": {
+        "Science": {"good": "The experiment tests whether salt lowers the boiling point of water.",
+                    "weak": "This is about my experiment."},
+        "Humanities": {"good": "The freedom struggle united peasants, workers, and students against colonial rule.",
+                       "weak": "I will write about the freedom struggle."},
+        "Commerce": {"good": "This report explains why our store's profits fell last quarter.",
+                     "weak": "This report is about our shop."},
+    },
+    "Argument": {
+        "Science": {"good": "Tap water is unsafe here because tests found lead above the limit.",
+                    "weak": "Tap water is bad. Everyone knows it."},
+        "Humanities": {"good": "The policy failed because it ignored the farmers it claimed to help.",
+                       "weak": "The policy failed. It was terrible."},
+        "Commerce": {"good": "We should raise prices because material costs rose 20% this year.",
+                     "weak": "We should raise prices. Trust me."},
+    },
+    "Using sources": {
+        "Science": {"good": "According to the physics textbook, heat expands most metals.",
+                    "weak": "Scientists say heat expands metals."},
+        "Humanities": {"good": "According to Habib (2002), the revolt began in Meerut.",
+                       "weak": "People say the revolt began in Meerut."},
+        "Commerce": {"good": "According to the 2024 sales report, revenue peaks in December.",
+                     "weak": "Everyone knows sales peak in December."},
+    },
+    "Academic tone": {
+        "Science": {"good": "The result was significant and supports the hypothesis.",
+                    "weak": "The result was really awesome and super clear."},
+        "Humanities": {"good": "This essay suggests the king's policy may have failed.",
+                       "weak": "This essay is gonna prove the king was totally wrong."},
+        "Commerce": {"good": "Our profits are likely to grow steadily this year.",
+                     "weak": "Our profits are gonna be amazing this year!"},
+    },
+}
+
+
+def learn_card(skill: str, level: int, discipline: str) -> dict:
+    """Build a short Learn card: one rule, its source, and discipline examples.
+
+    The rule is the top ChromaDB hit trimmed to 3 sentences, or a short
+    fallback rule when no guides are ingested yet.
+    """
+    docs, metas = _query_guide_chunks(skill, n_results=1)
+    if docs and (docs[0] or "").strip():
+        meta = metas[0] if metas else {}
+        rule, source = first_sentences(docs[0]), meta.get("source")
+        chapter, license = meta.get("chapter"), meta.get("license")
+    else:
+        rule = FALLBACK_RULES[skill]
+        source, chapter, license = "VibeEduTwin", "Study guide", "CC BY"
+    examples = DISCIPLINE_EXAMPLES[skill][discipline]
+    return {"skill": skill, "level": level, "discipline": discipline,
+            "rule": rule, "source": source, "chapter": chapter,
+            "license": license, "good_example": examples["good"],
+            "weak_example": examples["weak"]}
 
 
 # --- Heuristic skill scorers (demo logic; Muse Spark plugs in here) -----------------
@@ -317,21 +450,74 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
                      "celebrated with feasts, flowers and boat races.",
                      "C) I like holidays."],
          "answer": "B",
-         "explanation": "A topic sentence names the topic AND the main idea."},
+         "explanation": "A topic sentence names the topic AND the main idea.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which is the best topic sentence for a lab report about evaporation?",
+                 "options": ["A) Evaporation is nice.",
+                             "B) Evaporation speeds up when temperature and airflow increase.",
+                             "C) I like experiments."]},
+             "Humanities": {
+                 "prompt": "Which is the best topic sentence for an essay about the freedom struggle?",
+                 "options": ["A) History is nice.",
+                             "B) The freedom struggle united peasants, workers and students against colonial rule.",
+                             "C) I like holidays."]},
+             "Commerce": {
+                 "prompt": "Which is the best topic sentence for a business report about sales?",
+                 "options": ["A) Sales are nice.",
+                             "B) Online sales grew 20% last quarter, driven by festival offers.",
+                             "C) I like shopping."]},
+         }},
         {"id": "p1-2", "type": "order",
          "prompt": "Put the paragraph in order. Sentences: 1) 'First, people "
                    "lay flower carpets called pookkalam.' 2) 'Onam is Kerala's "
                    "harvest festival.' 3) 'Finally, families share the Onasadya feast.'",
          "options": ["1,2,3", "2,1,3", "3,1,2"],
          "answer": "2,1,3",
-         "explanation": "Topic sentence first, details next, closing line last."},
+         "explanation": "Topic sentence first, details next, closing line last.",
+         "variants": {
+             "Science": {
+                 "prompt": "Put the paragraph in order. Sentences: 1) 'First, we "
+                           "heated 100 ml of water to 80°C.' 2) 'This experiment tests "
+                           "how temperature affects evaporation.' 3) 'Finally, we recorded "
+                           "the water level every ten minutes.'",
+                 "options": ["1,2,3", "2,1,3", "3,1,2"]},
+             "Humanities": {
+                 "prompt": "Put the paragraph in order. Sentences: 1) 'First, peasants "
+                           "refused to pay the new tax.' 2) 'The revolt began as a protest "
+                           "against unfair taxes.' 3) 'Finally, the rulers withdrew the tax.'",
+                 "options": ["1,2,3", "2,1,3", "3,1,2"]},
+             "Commerce": {
+                 "prompt": "Put the paragraph in order. Sentences: 1) 'First, we surveyed "
+                           "200 customers about prices.' 2) 'This report studies why store "
+                           "sales fell last quarter.' 3) 'Finally, we suggest three ways to "
+                           "win customers back.'",
+                 "options": ["1,2,3", "2,1,3", "3,1,2"]},
+         }},
         {"id": "p1-3", "type": "mcq",
          "prompt": "Which sentence does NOT belong in a paragraph about Onam?",
          "options": ["A) Children enjoy the holidays.",
                      "B) My bicycle has two wheels.",
                      "C) Boat races draw big crowds."],
          "answer": "B",
-         "explanation": "Every sentence must connect to the paragraph's one idea."},
+         "explanation": "Every sentence must connect to the paragraph's one idea.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which sentence does NOT belong in a paragraph about evaporation?",
+                 "options": ["A) Warm air holds more vapour.",
+                             "B) My bicycle has two wheels.",
+                             "C) Wind speeds up drying."]},
+             "Humanities": {
+                 "prompt": "Which sentence does NOT belong in a paragraph about the freedom struggle?",
+                 "options": ["A) Students joined the marches.",
+                             "B) My bicycle has two wheels.",
+                             "C) Workers went on strike."]},
+             "Commerce": {
+                 "prompt": "Which sentence does NOT belong in a paragraph about store sales?",
+                 "options": ["A) Festival offers drew crowds.",
+                             "B) My bicycle has two wheels.",
+                             "C) Online orders doubled."]},
+         }},
     ],
     ("Paragraphing", 2): [
         {"id": "p2-1", "type": "mcq",
@@ -340,7 +526,24 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
                      "B) Food is good.",
                      "C) I eat lunch daily."],
          "answer": "A",
-         "explanation": "Details prove the topic sentence with specifics."},
+         "explanation": "Details prove the topic sentence with specifics.",
+         "variants": {
+             "Science": {
+                 "prompt": "Pick the best supporting detail for: 'The solution changed colour.'",
+                 "options": ["A) It turned from blue to green as the temperature passed 60°C.",
+                             "B) Colour is nice.",
+                             "C) I mix liquids daily."]},
+             "Humanities": {
+                 "prompt": "Pick the best supporting detail for: 'The march was enormous.'",
+                 "options": ["A) Over ten thousand people walked from the village to the fort.",
+                             "B) Marches are good.",
+                             "C) I walk daily."]},
+             "Commerce": {
+                 "prompt": "Pick the best supporting detail for: 'The quarter was profitable.'",
+                 "options": ["A) Revenue rose 15% while costs stayed flat.",
+                             "B) Money is good.",
+                             "C) I earn daily."]},
+         }},
         {"id": "p2-2", "type": "order",
          "prompt": "Order the paragraph. 1) 'They practise for weeks before the race.' "
                    "2) 'Vallamkali is Kerala's famous boat race.' "
@@ -348,36 +551,129 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
                    "4) 'So the whole village gathers at the riverside.'",
          "options": ["2,3,1,4", "1,2,3,4", "4,3,2,1"],
          "answer": "2,3,1,4",
-         "explanation": "Topic -> description -> detail -> closing 'so' sentence."},
+         "explanation": "Topic -> description -> detail -> closing 'so' sentence.",
+         "variants": {
+             "Science": {
+                 "prompt": "Order the paragraph. 1) 'We repeated each reading three times.' "
+                           "2) 'This experiment measures how light affects plant growth.' "
+                           "3) 'Two pots sat in sunlight and two in shade.' "
+                           "4) 'So the shaded plants grew half as tall.'",
+                 "options": ["2,3,1,4", "1,2,3,4", "4,3,2,1"]},
+             "Humanities": {
+                 "prompt": "Order the paragraph. 1) 'They marched for twelve days to reach the sea.' "
+                           "2) 'The Salt March was a famous protest for freedom.' "
+                           "3) 'Thousands of villagers joined the marchers.' "
+                           "4) 'So the whole country watched the march.'",
+                 "options": ["2,3,1,4", "1,2,3,4", "4,3,2,1"]},
+             "Commerce": {
+                 "prompt": "Order the paragraph. 1) 'Staff called fifty unhappy customers for feedback.' "
+                           "2) 'This report studies our fall in repeat buyers.' "
+                           "3) 'Most buyers complained about slow delivery.' "
+                           "4) 'So faster delivery should win them back.'",
+                 "options": ["2,3,1,4", "1,2,3,4", "4,3,2,1"]},
+         }},
         {"id": "p2-3", "type": "mcq",
          "prompt": "Which closing sentence fits a paragraph about pookkalam?",
          "options": ["A) Thus the flower carpet shows the beauty of teamwork.",
                      "B) Flowers are colourful.",
                      "C) I must buy flowers."],
          "answer": "A",
-         "explanation": "A closing line restates the main idea, not a new fact."},
+         "explanation": "A closing line restates the main idea, not a new fact.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which closing sentence fits a lab report about evaporation?",
+                 "options": ["A) Thus faster airflow clearly speeds up evaporation.",
+                             "B) Water is useful.",
+                             "C) I must buy a flask."]},
+             "Humanities": {
+                 "prompt": "Which closing sentence fits an essay about the march?",
+                 "options": ["A) Thus the march showed the power of peaceful protest.",
+                             "B) Walking is healthy.",
+                             "C) I must buy shoes."]},
+             "Commerce": {
+                 "prompt": "Which closing sentence fits a report about falling sales?",
+                 "options": ["A) Thus better delivery should restore our sales.",
+                             "B) Shops are busy.",
+                             "C) I must buy stock."]},
+         }},
     ],
     ("Grammar", 1): [
         {"id": "g1-1", "type": "mcq",
          "prompt": "Choose the correct sentence.",
          "options": ["A) She go to school daily.", "B) She goes to school daily.",
                      "C) She going to school daily."],
-         "answer": "B", "explanation": "He/she/it takes verb+s: goes."},
+         "answer": "B", "explanation": "He/she/it takes verb+s: goes.",
+         "variants": {
+             "Science": {
+                 "prompt": "Choose the correct sentence for a lab report.",
+                 "options": ["A) The solution boil at 100°C.",
+                             "B) The solution boils at 100°C.",
+                             "C) The solution boiling at 100°C."]},
+             "Humanities": {
+                 "prompt": "Choose the correct sentence for an essay.",
+                 "options": ["A) The article discuss the revolt.",
+                             "B) The article discusses the revolt.",
+                             "C) The article discussing the revolt."]},
+             "Commerce": {
+                 "prompt": "Choose the correct sentence for a business report.",
+                 "options": ["A) The report show a profit.",
+                             "B) The report shows a profit.",
+                             "C) The report showing a profit."]},
+         }},
         {"id": "g1-2", "type": "mcq",
          "prompt": "Choose the correct article: '___ Onam is in Chingam.'",
          "options": ["A) A", "B) An", "C) No article needed"],
-         "answer": "C", "explanation": "Festival names take no article."},
+         "answer": "C", "explanation": "Festival names take no article.",
+         "variants": {
+             "Science": {
+                 "prompt": "Choose the correct article: '___ Evaporation speeds up in summer.'",
+                 "options": ["A) A", "B) An", "C) No article needed"],
+                 "explanation": "Process names take no article."},
+             "Humanities": {
+                 "prompt": "Choose the correct article: '___ Freedom struggles need brave leaders.'",
+                 "options": ["A) A", "B) An", "C) No article needed"],
+                 "explanation": "General plural nouns take no article."},
+             "Commerce": {
+                 "prompt": "Choose the correct article: '___ Sales rose last quarter.'",
+                 "options": ["A) A", "B) An", "C) No article needed"],
+                 "explanation": "General plural nouns take no article."},
+         }},
     ],
     ("Vocabulary", 1): [
         {"id": "v1-1", "type": "mcq",
          "prompt": "Pick the more academic word: 'The result was ___ .'",
          "options": ["A) very big", "B) significant", "C) really nice"],
-         "answer": "B", "explanation": "'Significant' is precise academic vocabulary."},
+         "answer": "B", "explanation": "'Significant' is precise academic vocabulary.",
+         "variants": {
+             "Science": {
+                 "prompt": "Pick the more academic word: 'The temperature rise was ___ .'",
+                 "options": ["A) very big", "B) significant", "C) really nice"]},
+             "Humanities": {
+                 "prompt": "Pick the more academic word: 'The effect of the law was ___ .'",
+                 "options": ["A) very big", "B) significant", "C) really nice"]},
+             "Commerce": {
+                 "prompt": "Pick the more academic word: 'The profit growth was ___ .'",
+                 "options": ["A) very big", "B) significant", "C) really nice"]},
+         }},
         {"id": "v1-2", "type": "mcq",
          "prompt": "'Linkers' are words that ___ .",
          "options": ["A) join ideas (because, however)",
                      "B) name festivals", "C) end sentences"],
-         "answer": "A", "explanation": "Linkers connect sentences and ideas."},
+         "answer": "A", "explanation": "Linkers connect sentences and ideas.",
+         "variants": {
+             "Science": {
+                 "prompt": "'Linkers' are words that ___ .",
+                 "options": ["A) join ideas (since, therefore)",
+                             "B) name chemicals", "C) end experiments"]},
+             "Humanities": {
+                 "prompt": "'Linkers' are words that ___ .",
+                 "options": ["A) join ideas (however, because)",
+                             "B) name kings", "C) end essays"]},
+             "Commerce": {
+                 "prompt": "'Linkers' are words that ___ .",
+                 "options": ["A) join ideas (therefore, while)",
+                             "B) name products", "C) end meetings"]},
+         }},
     ],
     ("Sentence structure", 1): [
         {"id": "s1-1", "type": "mcq",
@@ -385,13 +681,47 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
          "options": ["A) She stayed home because she was ill.",
                      "B) Because she stayed home she was ill.",
                      "C) She because stayed home she was ill."],
-         "answer": "A", "explanation": "'Because' joins reason to result in order."},
+         "answer": "A", "explanation": "'Because' joins reason to result in order.",
+         "variants": {
+             "Science": {
+                 "prompt": "Join with 'because': 'The flask cracked. It was heated too fast.'",
+                 "options": ["A) The flask cracked because it was heated too fast.",
+                             "B) Because the flask cracked it was heated too fast.",
+                             "C) The flask because cracked it was heated too fast."]},
+             "Humanities": {
+                 "prompt": "Join with 'because': 'The villagers marched. They opposed the tax.'",
+                 "options": ["A) The villagers marched because they opposed the tax.",
+                             "B) Because the villagers marched they opposed the tax.",
+                             "C) The villagers because marched they opposed the tax."]},
+             "Commerce": {
+                 "prompt": "Join with 'because': 'The shop closed early. Sales were slow.'",
+                 "options": ["A) The shop closed early because sales were slow.",
+                             "B) Because the shop closed early sales were slow.",
+                             "C) The shop because closed early sales were slow."]},
+         }},
         {"id": "s1-2", "type": "mcq",
          "prompt": "Which sentence is complete?",
          "options": ["A) Running fast down the road.",
                      "B) The children ran fast down the road.",
                      "C) When the race began."],
-         "answer": "B", "explanation": "A sentence needs a subject + finite verb."},
+         "answer": "B", "explanation": "A sentence needs a subject + finite verb.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which sentence is complete?",
+                 "options": ["A) Heating the flask gently.",
+                             "B) The students heated the flask gently.",
+                             "C) When the reading settled."]},
+             "Humanities": {
+                 "prompt": "Which sentence is complete?",
+                 "options": ["A) Marching to the fort.",
+                             "B) The villagers marched to the fort.",
+                             "C) When the speech ended."]},
+             "Commerce": {
+                 "prompt": "Which sentence is complete?",
+                 "options": ["A) Counting the day's cash.",
+                             "B) The manager counted the day's cash.",
+                             "C) When the shop closed."]},
+         }},
     ],
     ("Argument", 1): [
         {"id": "a1-1", "type": "mcq",
@@ -399,13 +729,47 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
          "options": ["A) Onam falls in Chingam.",
                      "B) Every school should teach art.",
                      "C) Rice is served on a leaf."],
-         "answer": "B", "explanation": "A claim argues something that needs proof."},
+         "answer": "B", "explanation": "A claim argues something that needs proof.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which is a claim (not a fact)?",
+                 "options": ["A) Water boils at 100°C.",
+                             "B) Every lab should recycle its chemicals.",
+                             "C) Salt dissolves in water."]},
+             "Humanities": {
+                 "prompt": "Which is a claim (not a fact)?",
+                 "options": ["A) The march reached the sea in April.",
+                             "B) Every school should teach art.",
+                             "C) The fort has four gates."]},
+             "Commerce": {
+                 "prompt": "Which is a claim (not a fact)?",
+                 "options": ["A) Sales rose 10% in March.",
+                             "B) Every shop should open on Sundays.",
+                             "C) Cash is kept in the safe."]},
+         }},
         {"id": "a1-2", "type": "mcq",
          "prompt": "Which best supports: 'Reading builds vocabulary'?",
          "options": ["A) My friend reads comics.",
                      "B) Studies show readers meet thousands of new words yearly.",
                      "C) Books have pages."],
-         "answer": "B", "explanation": "Evidence must directly prove the claim."},
+         "answer": "B", "explanation": "Evidence must directly prove the claim.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which best supports: 'Boiling kills germs'?",
+                 "options": ["A) My friend boils milk.",
+                             "B) Lab tests show boiled water has almost no live germs.",
+                             "C) Pots have lids."]},
+             "Humanities": {
+                 "prompt": "Which best supports: 'The march united the village'?",
+                 "options": ["A) My friend likes marches.",
+                             "B) Records show farmers, traders and teachers marched together.",
+                             "C) Roads are long."]},
+             "Commerce": {
+                 "prompt": "Which best supports: 'Lower prices raise sales'?",
+                 "options": ["A) My friend likes discounts.",
+                             "B) Store data shows sales doubled during the discount week.",
+                             "C) Shops have doors."]},
+         }},
     ],
     ("Using sources", 1): [
         {"id": "u1-1", "type": "mcq",
@@ -413,11 +777,39 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
          "options": ["A) According to the textbook, plants need sunlight.",
                      "B) Plants need sunlight, I think.",
                      "C) Sunlight sunlight plants."],
-         "answer": "A", "explanation": "'According to X' names the source."},
+         "answer": "A", "explanation": "'According to X' names the source.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which sentence cites a source correctly?",
+                 "options": ["A) According to the textbook, plants need sunlight.",
+                             "B) Plants need sunlight, I think.",
+                             "C) Sunlight sunlight plants."]},
+             "Humanities": {
+                 "prompt": "Which sentence cites a source correctly?",
+                 "options": ["A) According to the history book, the revolt began in Meerut.",
+                             "B) The revolt began in Meerut, I think.",
+                             "C) Revolt revolt Meerut."]},
+             "Commerce": {
+                 "prompt": "Which sentence cites a source correctly?",
+                 "options": ["A) According to the sales report, revenue peaks in December.",
+                             "B) Revenue peaks in December, I think.",
+                             "C) Revenue revenue December."]},
+         }},
         {"id": "u1-2", "type": "mcq",
          "prompt": "Copying a sentence without naming the writer is ___ .",
          "options": ["A) plagiarism", "B) planning", "C) proofreading"],
-         "answer": "A", "explanation": "Always credit the source."},
+         "answer": "A", "explanation": "Always credit the source.",
+         "variants": {
+             "Science": {
+                 "prompt": "Copying a lab result without naming the writer is ___ .",
+                 "options": ["A) plagiarism", "B) planning", "C) proofreading"]},
+             "Humanities": {
+                 "prompt": "Copying a paragraph without naming the writer is ___ .",
+                 "options": ["A) plagiarism", "B) planning", "C) proofreading"]},
+             "Commerce": {
+                 "prompt": "Copying a report figure without naming the writer is ___ .",
+                 "options": ["A) plagiarism", "B) planning", "C) proofreading"]},
+         }},
     ],
     ("Academic tone", 1): [
         {"id": "t1-1", "type": "mcq",
@@ -425,22 +817,77 @@ PRACTICE_BANK: dict[tuple[str, int], list[dict]] = {
          "options": ["A) The result was really good.",
                      "B) The result was significant.",
                      "C) Wow, great result!"],
-         "answer": "B", "explanation": "Academic tone avoids chatty words."},
+         "answer": "B", "explanation": "Academic tone avoids chatty words.",
+         "variants": {
+             "Science": {
+                 "prompt": "Pick the more academic sentence for a lab report.",
+                 "options": ["A) The result was really good.",
+                             "B) The result was significant.",
+                             "C) Wow, great result!"]},
+             "Humanities": {
+                 "prompt": "Pick the more academic sentence for an essay.",
+                 "options": ["A) The essay was really good.",
+                             "B) The essay was persuasive.",
+                             "C) Wow, great essay!"]},
+             "Commerce": {
+                 "prompt": "Pick the more academic sentence for a business report.",
+                 "options": ["A) The quarter was really good.",
+                             "B) The quarter was profitable.",
+                             "C) Wow, great quarter!"]},
+         }},
         {"id": "t1-2", "type": "mcq",
          "prompt": "Which sentence hedges politely?",
          "options": ["A) This proves everyone is wrong.",
                      "B) This suggests the plan may need changes.",
                      "C) This is the best ever."],
-         "answer": "B", "explanation": "'Suggests/may' soften claims politely."},
+         "answer": "B", "explanation": "'Suggests/may' soften claims politely.",
+         "variants": {
+             "Science": {
+                 "prompt": "Which sentence hedges politely?",
+                 "options": ["A) This proves every chemist is wrong.",
+                             "B) This suggests the mixture may need heating.",
+                             "C) This is the best ever."]},
+             "Humanities": {
+                 "prompt": "Which sentence hedges politely?",
+                 "options": ["A) This proves every king was wrong.",
+                             "B) This suggests the policy may have failed.",
+                             "C) This is the best ever."]},
+             "Commerce": {
+                 "prompt": "Which sentence hedges politely?",
+                 "options": ["A) This proves every rival is wrong.",
+                             "B) This suggests the plan may need changes.",
+                             "C) This is the best ever."]},
+         }},
     ],
 }
 
 
-def practice_items_for(skill: str, level: int) -> list[dict]:
-    """Demo bank lookup with fallback: exact level -> L1 -> Paragraphing L1."""
-    return (PRACTICE_BANK.get((skill, level))
+def practice_items_for(skill: str, level: int,
+                       discipline: str | None = None) -> list[dict]:
+    """Demo bank lookup with fallback: exact level -> L1 -> Paragraphing L1.
+
+    With a discipline, each item's prompt/options come from its discipline
+    variant (ids, answers, and explanations stay aligned); without one, the
+    generic base items are returned (used by teacher sets).
+    """
+    base = (PRACTICE_BANK.get((skill, level))
             or PRACTICE_BANK.get((skill, 1))
             or PRACTICE_BANK[("Paragraphing", 1)])
+    if discipline is None:
+        return base
+    rendered = []
+    for item in base:
+        variant = (item.get("variants") or {}).get(discipline)
+        if not variant:
+            rendered.append(item)
+            continue
+        new = dict(item)
+        new["prompt"] = variant.get("prompt", item["prompt"])
+        new["options"] = list(variant.get("options", item["options"]))
+        if "explanation" in variant:
+            new["explanation"] = variant["explanation"]
+        rendered.append(new)
+    return rendered
 
 
 def check_answer(item: dict, given: str) -> bool:
@@ -505,6 +952,19 @@ def generate_practice_set(request_text: str) -> list[dict]:
 
 
 # --- Endpoints --------------------------------------------------------------------------
+@app.post("/learners")
+def post_learner(data: LearnerIn):
+    """Signup step: register a learner with their chosen discipline."""
+    try:
+        learner_id = store.create_learner(
+            data.name, data.year, data.subject, data.language, data.discipline
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "learner_id": learner_id,
+            "discipline": data.discipline, "message": "Learner signed up."}
+
+
 @app.post("/drafts")
 def post_draft(data: DraftIn):
     """Write step: save the paragraph and remember it for the twin."""
@@ -521,7 +981,8 @@ def post_draft(data: DraftIn):
 @app.post("/diagnose")
 def post_diagnose(data: DiagnoseIn):
     """Diagnose step: score the draft on 7 skills, return scores + weakest."""
-    if store.get_learner(data.learner_id) is None:
+    learner = store.get_learner(data.learner_id)
+    if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     text = data.content
     if data.draft_id is not None:  # prefer the stored draft when given
@@ -536,29 +997,54 @@ def post_diagnose(data: DiagnoseIn):
     store.save_skill_scores(data.learner_id, scores)
     store.log_event(data.learner_id, "Diagnose", "diagnose", "heuristic-scorer",
                     f"weakest={weakest} scores={scores}")
+    level = level_for_score(scores[weakest])
+    discipline = learner.get("discipline") or "Science"
     return {"scores": scores, "weakest": weakest,
-            "level": level_for_score(scores[weakest]),
+            "level": level,
             "twin_note": twin_note(weakest),
-            "study_material": study_material(weakest)}
+            "study_material": study_material(weakest),
+            "learn": learn_card(weakest, level, discipline)}
+
+
+@app.get("/learn")
+def get_learn(learner_id: int, skill: str):
+    """Learn step: a short card for one skill (rule + discipline examples)."""
+    learner = store.get_learner(learner_id)
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    if skill not in SKILLS:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown skill. Choose from: {', '.join(SKILLS)}")
+    level = level_for_score(latest_scores(learner_id).get(skill, 0))
+    discipline = learner.get("discipline") or "Science"
+    card = learn_card(skill, level, discipline)
+    store.log_event(learner_id, "Learn", "twin", "get_learn",
+                    f"skill={skill} level={level} discipline={discipline}")
+    return card
 
 
 @app.get("/practice")
 def get_practice(learner_id: int):
-    """Practise step: a short set for the weakest skill and level (no answers)."""
-    if store.get_learner(learner_id) is None:
+    """Practise step: a short set for the weakest skill and level (no answers).
+
+    Items use examples from the learner's discipline.
+    """
+    learner = store.get_learner(learner_id)
+    if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
+    discipline = learner.get("discipline") or "Science"
     skill, level = weakest_skill(latest_scores(learner_id))
-    items = practice_items_for(skill, level)
+    items = practice_items_for(skill, level, discipline)
     set_id = uuid.uuid4().hex[:8]
     ISSUED_SETS[set_id] = {"learner_id": learner_id, "skill": skill,
-                           "level": level,
+                           "level": level, "discipline": discipline,
                            "answers": {it["id"]: it["answer"] for it in items}}
-    public = [{k: v for k, v in it.items() if k not in ("answer",)}
+    public = [{k: v for k, v in it.items() if k not in ("answer", "variants")}
               for it in items]
     store.log_event(learner_id, "Practise", "twin", "get_practice",
                     f"set_id={set_id} skill={skill} level={level} items={len(items)}")
     return {"set_id": set_id, "learner_id": learner_id, "skill": skill,
-            "level": level, "items": public}
+            "level": level, "discipline": discipline, "items": public}
 
 
 @app.post("/practice/answers")
@@ -568,7 +1054,7 @@ def post_answers(data: PracticeAnswersIn):
     if issued is None or issued["learner_id"] != data.learner_id:
         raise HTTPException(status_code=404, detail="Unknown or foreign set_id")
     skill = issued["skill"]
-    items = practice_items_for(skill, issued["level"])
+    items = practice_items_for(skill, issued["level"], issued.get("discipline"))
     details: list[dict] = []
     correct = 0
     for item in items:
@@ -663,10 +1149,80 @@ def verify_twin_reply(reply: str) -> list[str]:
     return errors
 
 
+def _has_non_latin(text: str) -> bool:
+    """True when the text has letters outside the Latin script."""
+    return any(ch.isalpha() and ord(ch) > 0x024F for ch in (text or ""))
+
+
+# Common Manglish words (Malayalam typed in Latin letters). Any one of these
+# marks the message as Manglish so the twin reflects it back in English.
+MANGLISH_WORDS = frozenset({
+    "enikku", "enne", "ente", "njan", "njaan", "ningal",
+    "enth", "entha", "enthu", "enthina", "engane", "eppol", "evide",
+    "illa", "alla", "aano", "alle",
+    "manassilayi", "manassilayilla", "manassilayo",
+    "ariyilla", "ariyamo", "ariyumo",
+    "venam", "venda", "vayya",
+    "ezhuthi", "ezhuthan", "ezhuthamo", "ezhuthiya",
+    "parayu", "parayamo", "paranj",
+    "cheyyan", "cheyth", "cheyyamo",
+    "tharumo", "thanne",
+    "vayich", "padich", "padikkan",
+    "sari", "sariyaano", "sahayam",
+    "valare", "kurach", "koodi", "mathram",
+    "pakshe", "engil", "ennal", "dayavayi",
+    "kuzhappamilla", "karyamilla",
+})
+
+
+def _is_manglish(text: str) -> bool:
+    """True when the text looks like Manglish (Malayalam in Latin letters)."""
+    words = set(re.findall(r"[a-z]+", (text or "").lower()))
+    return not MANGLISH_WORDS.isdisjoint(words)
+
+
+# Distinctive English words (3+ letters; ambiguous shorts like "me" or "is"
+# are left out since they collide with other languages). Latin-script input
+# with none of these is treated as a non-English language.
+ENGLISH_WORDS = frozenset({
+    "the", "and", "are", "was", "were", "been", "have", "has", "had",
+    "will", "would", "could", "should", "shall", "does", "did",
+    "with", "from", "that", "this", "these", "those", "what", "when",
+    "where", "which", "how", "why", "because", "than", "then", "them",
+    "they", "their", "your", "yours", "you", "about", "into", "over",
+    "but", "not", "for", "she", "her", "his", "him", "our", "can",
+    "please", "thanks", "thank", "hello", "sorry",
+    "help", "hint", "give", "tell", "show", "need", "want",
+    "check", "first", "line", "write", "writing",
+    "sentence", "sentences", "paragraph", "essay", "grammar", "verb",
+    "word", "words", "answer", "question", "correct", "wrong",
+    "good", "better", "mistake", "easy", "hard", "difficult",
+})
+
+
+def _is_english(text: str) -> bool:
+    """True when Latin-script text shows evidence of English.
+
+    Empty or wordless text defaults to True (no foreign evidence); anything
+    with Latin words but no English marker is some other language.
+    """
+    words = set(re.findall(r"[a-z]+", (text or "").lower()))
+    if not words:
+        return True
+    return not ENGLISH_WORDS.isdisjoint(words)
+
+
 def twin_safe_reply(message: str, weakest: str) -> str:
-    """Compliant fallback: main problem first with the learner's own words, then a hint."""
+    """Compliant fallback: main problem first, then a hint. English only.
+
+    The learner's own words are quoted only when they are English; anything
+    else falls back to "your draft" so the reply stays in simple English.
+    """
     snippet = " ".join((message or "").split())[:120]
-    quoted = f'"{snippet}"' if snippet and not _has_generic_praise(snippet) else "your draft"
+    if snippet and not _has_generic_praise(snippet) and not _has_non_latin(snippet):
+        quoted = f'"{snippet}"'
+    else:
+        quoted = "your draft"
     return (
         f"The main problem in {quoted} is {weakest.lower()}. "
         f"{TWIN_HINTS.get(weakest, TWIN_HINTS['Paragraphing'])}"
@@ -674,27 +1230,48 @@ def twin_safe_reply(message: str, weakest: str) -> str:
 
 
 TWIN_HINTS = {
-    "Grammar": "Pick ONE sentence and check only its verbs. Does every he/she/it line end with verb+s?",
-    "Vocabulary": "Find your weakest word (like 'nice' or 'very big') and swap it for one precise word.",
-    "Sentence structure": "Read your longest sentence aloud. If you gasp for breath, split it with 'because' or 'but'.",
-    "Paragraphing": "Cover every line except the first. Does that first line alone tell the main idea?",
-    "Argument": "Point at your reason word: because, so, therefore. No reason word, no argument yet.",
-    "Using sources": "Add three words before one fact: 'According to ...'. Whose idea was it?",
-    "Academic tone": "Hunt one chatty word (very, really, thing) and replace it with a calmer one.",
+    "Grammar": "Check your verbs. Does each he, she, or it need an s at the end?",
+    "Vocabulary": "Find one weak word. Use a strong word in its place.",
+    "Sentence structure": "Read your longest sentence. Can you cut it in two with because or but?",
+    "Paragraphing": "Read only your first line. Does it tell the main idea?",
+    "Argument": "Find your reason word: because, so, or therefore. No reason word? No argument yet.",
+    "Using sources": "Add 'According to' before one fact. Whose idea was it?",
+    "Academic tone": "Find one chatty word. Use a calm word in its place.",
+}
+
+
+TWIN_STARTERS = {
+    "Grammar": "She ___ to school daily.",
+    "Vocabulary": "The result was ___.",
+    "Sentence structure": "She stayed home because ___.",
+    "Paragraphing": "My paragraph is about ___.",
+    "Argument": "Schools should ___ because ___.",
+    "Using sources": "According to ___, ___.",
+    "Academic tone": "This suggests that ___.",
 }
 
 
 def twin_scaffold_reply(message: str, weakest: str) -> str:
-    """2-3 sentence future-self reply: hints only, Malayalam bridge, no full answers."""
+    """2-3 sentence future-self reply: simple English only, no full answers.
+
+    Learners may write in any language. Anything except English - Malayalam
+    script, Manglish, or any other language - gets the idea reflected back
+    in simple English plus one sentence starter. (Template until Muse Spark
+    lands with real translation.)
+    """
     lowered = message.lower()
     if any(t in lowered for t in ["write it for me", "write my", "do my homework",
                                   "full answer", "write the paragraph", "essay for me"]):
-        return ("I won't write it for you - future-you earned this by struggling a little. "
-                "Send me your first line and I'll tell you what's strong in it. "
-                "\u0d12\u0d30\u0d41 \u0d36\u0d4d\u0d30\u0d2e\u0d02 \u0d15\u0d42\u0d1f\u0d3f (oru shramam koodi - one more try)!")
+        return ("I will not write it for you. "
+                "Send me your first line. "
+                "I will tell you what is strong in it.")
+    if (_has_non_latin(message) or _is_manglish(message)
+            or not _is_english(message)):
+        starter = TWIN_STARTERS.get(weakest, TWIN_STARTERS["Paragraphing"])
+        return ("You are saying that this part is hard for you. "
+                f"Start with this: '{starter}'")
     return (f"{TWIN_HINTS.get(weakest, TWIN_HINTS['Paragraphing'])} "
-            f"I tripped on {weakest.lower()} too, then it clicked. "
-            f"\u0d12\u0d30\u0d41 \u0d36\u0d4d\u0d30\u0d2e\u0d02 \u0d15\u0d42\u0d1f\u0d3f (oru shramam koodi - one more try)!")
+            f"I found {weakest.lower()} hard too.")
 
 
 @app.get("/drafts")

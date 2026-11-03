@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { api } from '../api.js';
+import LearnCard from '../components/LearnCard.jsx';
 import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 
-// Write: big text box, submit, then 7-skill diagnosis + twin note.
-export default function Write() {
+// Write: big text box, submit, then 7-skill diagnosis + twin note + Learn card.
+export default function Write({ go }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -62,6 +63,9 @@ export default function Write() {
             <div className="card-title">Your twin says</div>
             <p>{result.twin_note}</p>
           </div>
+          {result.learn && (
+            <LearnCard card={result.learn} onPractise={() => go('practice')} />
+          )}
           {result.study_material && result.study_material.length > 0 && (
             <div className="card">
               <div className="card-title">From the guides</div>

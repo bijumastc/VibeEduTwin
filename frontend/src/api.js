@@ -37,6 +37,8 @@ export const api = {
   levelCheck: () => post('/level-check', {}),
   growth: () => request(`/growth?learner_id=${LEARNER_ID}`),
   drafts: () => request(`/drafts?learner_id=${LEARNER_ID}`),
+  learn: (skill) => request(`/learn?learner_id=${LEARNER_ID}&skill=${encodeURIComponent(skill)}`),
+  signup: (profile) => request('/learners', { method: 'POST', body: JSON.stringify(profile) }),
   askTwin: (message, screen) => post('/twin/ask', { message, screen }),
 };
 

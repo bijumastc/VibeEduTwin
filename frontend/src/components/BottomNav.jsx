@@ -2,8 +2,8 @@
 const TABS = [
   { id: 'home', label: 'Home' },
   { id: 'write', label: 'Write' },
+  { id: 'learn', label: 'Learn' },
   { id: 'practice', label: 'Practice' },
-  { id: 'writing', label: 'My Writing' },
   { id: 'growth', label: 'My Growth' },
 ];
 

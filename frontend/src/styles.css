@@ -334,6 +334,13 @@ input[type="text"] {
   cursor: pointer;
 }
 
+.twin-lang-hint {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 16px 12px;
+  margin: 0;
+}
+
 /* Misc */
 .error {
   background: #fdecec;

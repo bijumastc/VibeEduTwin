@@ -78,7 +78,7 @@ export default function Practice() {
   return (
     <div>
       <h2>Practice: {set.skill}</h2>
-      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}</div>
+      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}{set.discipline ? ` · ${set.discipline}` : ''}</div>
       <div className="card">
         <p>{item.prompt}</p>
       </div>

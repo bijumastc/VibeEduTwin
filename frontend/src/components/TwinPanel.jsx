@@ -55,6 +55,7 @@ export default function TwinPanel({ screen, onClose }) {
           />
           <button onClick={() => send(input)} disabled={sending}>Send</button>
         </div>
+        <p className="twin-lang-hint">You can type in Malayalam or Manglish.</p>
       </aside>
     </>
   );

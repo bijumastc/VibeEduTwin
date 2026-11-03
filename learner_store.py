@@ -24,6 +24,8 @@ CHROMA_DIR = ROOT / "chroma_db"  # ChromaDB persistent storage
 
 
 # --- Schema -------------------------------------------------------------------
+DISCIPLINES = ("Science", "Humanities", "Commerce")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS learners (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +33,7 @@ CREATE TABLE IF NOT EXISTS learners (
     year TEXT NOT NULL,
     subject TEXT NOT NULL,
     language_preference TEXT NOT NULL,
+    discipline TEXT NOT NULL DEFAULT 'Science',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS skill_scores (
@@ -75,17 +78,39 @@ def _connect() -> sqlite3.Connection:
     conn.execute('PRAGMA encoding = "UTF-8"')
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)  # no-op once tables exist
+    _ensure_discipline_column(conn)  # migrate pre-discipline databases
     return conn
 
 
+def _ensure_discipline_column(conn: sqlite3.Connection) -> None:
+    """Add learners.discipline to databases created before it existed.
+
+    Existing rows (e.g. the demo learner) default to Science.
+    """
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(learners)")]
+    if "discipline" not in columns:
+        conn.execute(
+            "ALTER TABLE learners ADD COLUMN discipline TEXT NOT NULL DEFAULT 'Science'"
+        )
+
+
 # --- Learners -----------------------------------------------------------------
-def create_learner(name: str, year: str, subject: str, language: str) -> int:
-    """Register a learner; returns the new learner id."""
+def create_learner(name: str, year: str, subject: str, language: str,
+                   discipline: str = "Science") -> int:
+    """Register a learner; returns the new learner id.
+
+    discipline must be one of Science, Humanities, Commerce.
+    """
+    if discipline not in DISCIPLINES:
+        raise ValueError(
+            f"Unknown discipline {discipline!r}. Choose from: {', '.join(DISCIPLINES)}"
+        )
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO learners (name, year, subject, language_preference, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (name, year, subject, language, _utcnow()),
+            "INSERT INTO learners (name, year, subject, language_preference,"
+            " discipline, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (name, year, subject, language, discipline, _utcnow()),
         )
         return cur.lastrowid
 
@@ -234,7 +259,8 @@ def search_writing_samples(learner_id: int, query: str, n_results: int = 3) -> l
 # --- Sample test ------------------------------------------------------------------
 def _sample_test() -> None:
     """Create one learner, save scores + draft + sample, print everything back."""
-    learner_id = create_learner("Meera", "10", "English", "Malayalam")
+    learner_id = create_learner("Meera", "10", "English", "Malayalam",
+                                discipline="Science")
     print(f"Created learner id={learner_id}")
 
     save_skill_scores(learner_id, {

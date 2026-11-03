@@ -2,15 +2,21 @@ import { useEffect, useState } from 'react';
 import { api, LeveledUp } from '../api.js';
 import SkillBars from '../components/SkillBars.jsx';
 
-// My Growth: the full chart unlocks only after the first level-up.
+// My Growth: skill chart on top, drafts with feedback below. The full chart
+// unlocks only after the first level-up; drafts always show.
 export default function MyGrowth({ go }) {
   const [state, setState] = useState({ loading: true });
 
   useEffect(() => {
-    Promise.all([api.growth(), api.levelCheck()])
-      .then(([growth, levels]) => {
+    Promise.all([api.growth(), api.levelCheck(), api.drafts()])
+      .then(([growth, levels, draftsRes]) => {
         if ((levels.leveled_up || []).length > 0) LeveledUp.set();
-        setState({ loading: false, growth, levels });
+        setState({
+          loading: false,
+          growth,
+          levels,
+          drafts: [...draftsRes.drafts].reverse(),
+        });
       })
       .catch((err) => setState({ loading: false, error: err.message }));
   }, []);
@@ -20,24 +26,21 @@ export default function MyGrowth({ go }) {
 
   const scores = state.growth.scores || {};
   const names = Object.keys(scores);
-  if (names.length === 0) {
-    return (
-      <div>
-        <h2>My Growth</h2>
+  const weakest = names.length > 0
+    ? names.reduce((a, b) => (scores[a] <= scores[b] ? a : b))
+    : null;
+  const levels = state.levels.levels || {};
+
+  return (
+    <div>
+      <h2>My Growth</h2>
+      {names.length === 0 && (
         <div className="card tint">
           <div className="card-title">No scores yet</div>
           <p className="muted">Write a paragraph to get your first diagnosis.</p>
         </div>
-        <button className="btn" onClick={() => go('write')}>Write now</button>
-      </div>
-    );
-  }
-
-  if (!LeveledUp.get()) {
-    const weakest = names.reduce((a, b) => (scores[a] <= scores[b] ? a : b));
-    return (
-      <div>
-        <h2>My Growth</h2>
+      )}
+      {names.length > 0 && !LeveledUp.get() && (
         <div className="card tint">
           <div className="card-title">Your chart unlocks at level 2</div>
           <p className="muted">
@@ -45,27 +48,42 @@ export default function MyGrowth({ go }) {
             Score {80}%+ in practice to level up.
           </p>
         </div>
-        <button className="btn" onClick={() => go('practice')}>Practise now</button>
-      </div>
-    );
-  }
-
-  const weakest = names.reduce((a, b) => (scores[a] <= scores[b] ? a : b));
-  const levels = state.levels.levels || {};
-  return (
-    <div>
-      <h2>My Growth</h2>
-      <div className="card">
-        <SkillBars scores={scores} weakest={weakest} />
-      </div>
-      <div className="card tint">
-        {Object.keys(levels).map((skill) => (
-          <div key={skill}>
-            {skill}
-            <span className="level-chip">Level {levels[skill].level}</span>
+      )}
+      {names.length > 0 && LeveledUp.get() && (
+        <>
+          <div className="card">
+            <SkillBars scores={scores} weakest={weakest} />
           </div>
-        ))}
-      </div>
+          <div className="card tint">
+            {Object.keys(levels).map((skill) => (
+              <div key={skill}>
+                {skill}
+                <span className="level-chip">Level {levels[skill].level}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {(names.length === 0 || !LeveledUp.get()) && (
+        <button className="btn" onClick={() => go(names.length === 0 ? 'write' : 'practice')}>
+          {names.length === 0 ? 'Write now' : 'Practise now'}
+        </button>
+      )}
+
+      <h2>My drafts</h2>
+      {state.drafts.length === 0 && (
+        <div className="card tint">
+          <div className="card-title">Nothing here yet</div>
+          <p className="muted">Your paragraphs will appear here.</p>
+        </div>
+      )}
+      {state.drafts.map((d) => (
+        <div className="card" key={d.id}>
+          <div className="draft-date">{String(d.created_at).slice(0, 10)}</div>
+          <p>{d.content}</p>
+          <p className="muted">{d.feedback || 'No feedback yet.'}</p>
+        </div>
+      ))}
     </div>
   );
 }
