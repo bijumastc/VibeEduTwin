@@ -378,6 +378,36 @@ input[type="text"] {
   min-height: 44px;
 }
 
+.step-progress {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+
+.step-nav {
+  display: flex;
+  gap: 10px;
+}
+
+.step-nav .btn {
+  margin-top: 0;
+  flex: 1;
+}
+
+.info-btn {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: var(--radius-pill);
+  min-width: 32px;
+  min-height: 32px;
+  font-size: 15px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.based-on {
+  font-size: 14px;
+}
+
 /* Misc */
 .error {
   background: #fdecec;

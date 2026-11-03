@@ -37,7 +37,8 @@ def test_plan_checklist_matches_verifier_rules():
     plan = (ROOT / "docs" / "plan.md").read_text(encoding="utf-8")
     for rule in ("not-empty", "non-empty", "unique-id", "no-generic-praise",
                  "no-invented-examples", "valid-type", "min-options",
-                 "has-answer", "answer-matches-option", "has-explanation"):
+                 "has-answer", "answer-matches-option", "has-explanation",
+                 "grounded-in-excerpt"):
         assert f"`{rule}`" in plan, rule
     assert '"pass"' in plan and '"failed"' in plan and '"fix"' in plan
     assert "No invented examples" in plan

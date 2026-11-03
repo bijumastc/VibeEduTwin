@@ -212,8 +212,10 @@ def test_scaffold_ui_strings():
     task = (ROOT / "frontend" / "src" / "components" / "ScaffoldTask.jsx").read_text(
         encoding="utf-8")
     assert "Show me now" in task
-    learn = (ROOT / "frontend" / "src" / "screens" / "Learn.jsx").read_text(encoding="utf-8")
-    assert "Try the task" in learn
+    lesson = (ROOT / "frontend" / "src" / "components" / "LessonView.jsx").read_text(
+        encoding="utf-8")
+    assert "Your turn" in lesson and "Start task" in lesson
+    assert "ScaffoldTask" in lesson
     growth = (ROOT / "frontend" / "src" / "screens" / "MyGrowth.jsx").read_text(
         encoding="utf-8")
     assert "Working more independently" in growth

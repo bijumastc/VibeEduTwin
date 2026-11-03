@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import LearnCard from '../components/LearnCard.jsx';
-import ScaffoldTask from '../components/ScaffoldTask.jsx';
+import LessonView from '../components/LessonView.jsx';
 
 // Learn: curriculum of 6 disciplines x 6 ordered modules. The learner's own
 // discipline opens by default; others are browsable. Modules unlock in order
@@ -10,7 +9,6 @@ export default function Learn({ go }) {
   const [data, setData] = useState(null);
   const [discipline, setDiscipline] = useState('');
   const [content, setContent] = useState(null);
-  const [taskOpen, setTaskOpen] = useState(false);
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState('');
 
@@ -42,38 +40,12 @@ export default function Learn({ go }) {
   if (error) return <div><h2>Learn</h2><div className="error">{error}</div></div>;
   if (!data) return <div><h2>Learn</h2><p className="loading">Loading…</p></div>;
 
-  if (taskOpen && content) {
-    return (
-      <ScaffoldTask
-        discipline={content.discipline}
-        moduleId={content.module}
-        moduleTitle={content.title}
-        onBack={() => setTaskOpen(false)}
-      />
-    );
-  }
-
   if (content || loadingContent) {
+    if (loadingContent || !content) {
+      return <div><h2>Learn</h2><p className="loading">Loading…</p></div>;
+    }
     return (
-      <div>
-        <h2>Learn</h2>
-        {loadingContent && <p className="loading">Loading…</p>}
-        {content && (
-          <>
-            <LearnCard
-              title={`${content.title} · ${content.discipline}`}
-              rule={content.rule}
-              example={content.example}
-              onPractise={() => go('practice')}
-            />
-            <button className="btn" onClick={() => setTaskOpen(true)}>Try the task</button>
-            <div style={{ height: 10 }} />
-          </>
-        )}
-        <button className="btn secondary" onClick={() => setContent(null)}>
-          All modules
-        </button>
-      </div>
+      <LessonView lesson={content} go={go} onBack={() => setContent(null)} />
     );
   }
 

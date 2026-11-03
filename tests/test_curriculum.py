@@ -105,27 +105,41 @@ def test_maxed_learner_reaches_genre_module(tmp_db):
     assert [s["id"] for s in states if s["current"]] == ["genre"]
 
 
-# --- Verified module content ----------------------------------------------
-def test_module_content_uses_verified_excerpts(tmp_db, monkeypatch):
-    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: _hit())
+# --- Lesson content -------------------------------------------------------
+def test_module_lesson_uses_grounded_idea(tmp_db, monkeypatch):
+    doc = ("A topic sentence opens the paragraph. It states the main point "
+           "first. Details that follow support it. For example, labs open "
+           "with the key finding for the reader.")
+    meta = {"source": "Writing for Success (McLean).pdf", "chapter": "Ch 4",
+            "license": "CC BY-NC-SA 3.0"}
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([doc], [meta]))
     learner_id = _learner(tmp_db)
     res = main.get_curriculum_module(learner_id, "Sciences", "topic-sentences")
     assert res["title"] == "Topic sentences"
-    assert res["rule"]["text"] == "First. Second. Third."
-    assert res["rule"]["source"] == "guide.pdf"
-    assert res["rule"]["chapter"] == "Chapter 2"
-    assert res["rule"]["license"] == "CC BY"
-    assert res["example"]["source"] == "guide.pdf"
+    assert res["idea"]["text"] == main.LESSON_IDEAS["topic-sentences"]
+    assert "hook" in res and res["hook"].strip()
+    assert len(res["try_first"]["options"]) == 3
+    assert res["task"].strip() and res["why"].strip()
+    assert res["based_on"][0]["title"] == "Writing for Success"
+    assert ".pdf" not in res["based_on"][0]["title"]
+
+
+def test_module_lesson_quotes_when_ungrounded(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=8: _hit())
+    learner_id = _learner(tmp_db)
+    res = main.get_curriculum_module(learner_id, "Sciences", "topic-sentences")
+    assert res["idea"]["text"] == "First. Second."
+    assert res["example"]["text"] == main.NO_VERIFIED_EXAMPLE
 
 
 def test_module_content_falls_back_to_no_verified(tmp_db, monkeypatch):
-    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: ([], []))
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=8: ([], []))
     learner_id = _learner(tmp_db)
     res = main.get_curriculum_module(learner_id, "Sciences", "topic-sentences")
-    assert res["rule"]["text"] == main.NO_VERIFIED_EXAMPLE
-    assert res["rule"]["source"] is None
+    assert res["idea"]["text"] == main.NO_VERIFIED_EXAMPLE
     assert res["example"]["text"] == main.NO_VERIFIED_EXAMPLE
-    assert res["example"]["source"] is None
+    assert res["based_on"] == []
 
 
 def test_locked_module_returns_403(tmp_db):
@@ -165,15 +179,15 @@ def test_learn_card_queries_rule_and_example(monkeypatch):
 
     def fake_query(query, n_results=3):
         seen.append(query)
-        return _hit(f"Text for {query}. Second. Third. Fourth.")
+        return _hit(f"Alpha {query} one. Beta {query} two. "
+                    f"Gamma {query} three. Delta {query} four.")
 
     monkeypatch.setattr(main, "_query_guides", fake_query)
     card = main.learn_card("Grammar", 1, "Sciences")
     assert "rule" in seen[0] and "lab report" in seen[1]
-    assert len(_sentences(card["rule"]["text"])) <= 3
-    assert card["rule"]["source"] == "guide.pdf"
-    assert card["example"]["source"] == "guide.pdf"
-    assert card["rule"]["text"] != card["example"]["text"]
+    assert len(_sentences(card["idea"]["text"])) <= 2
+    assert "guide.pdf" not in card["based_on"][0]["title"]
+    assert card["idea"]["text"] != card["example"]["text"]
 
 
 # --- Practice genre families -----------------------------------------------

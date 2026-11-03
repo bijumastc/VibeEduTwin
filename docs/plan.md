@@ -47,3 +47,9 @@ structurally checked at serve time and failures are excluded.
 - `non-empty`: the set must contain at least one item.
 - `unique-id`: every item needs a non-empty, unique id.
 - Every item must pass the full `practice_item` checklist.
+
+### Lesson ideas (`lesson_idea`)
+
+- `grounded-in-excerpt`: every claim in the idea text must be supported by
+  the retrieved excerpt (keyword overlap per claim). On failure the builder
+  re-retrieves: it tries the next excerpt until one grounds every claim.

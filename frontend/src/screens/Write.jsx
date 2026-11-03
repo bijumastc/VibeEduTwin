@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api.js';
+import CompactLesson from '../components/CompactLesson.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
-import LearnCard from '../components/LearnCard.jsx';
 import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 
@@ -71,10 +71,11 @@ export default function Write({ go }) {
             </div>
           )}
           {result.learn && (
-            <LearnCard
+            <CompactLesson
               title={`Learn: ${result.learn.skill}`}
-              rule={result.learn.rule}
+              idea={result.learn.idea}
               example={result.learn.example}
+              basedOn={result.learn.based_on}
               onPractise={() => go('practice')}
             />
           )}

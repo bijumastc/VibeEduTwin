@@ -100,8 +100,9 @@ def test_diagnose_includes_learn_card(tmp_db, monkeypatch):
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content="Nice good."))
     assert res["learn"]["skill"] == res["weakest"]
     assert res["learn"]["discipline"] == "Commerce & Management"
-    assert res["learn"]["rule"]["text"] == main.NO_VERIFIED_EXAMPLE
+    assert res["learn"]["idea"]["text"] == main.NO_VERIFIED_EXAMPLE
     assert res["learn"]["example"]["text"] == main.NO_VERIFIED_EXAMPLE
+    assert res["learn"]["based_on"] == []
 
 
 # --- Discipline-aware practice ---------------------------------------------
@@ -145,16 +146,14 @@ def test_learn_screen_is_discipline_curriculum():
     assert "api.curriculum()" in learn and "api.moduleContent(" in learn
     assert "current" in learn and "Locked" in learn
     assert "res.discipline" in learn  # learner's discipline opens by default
-    card = (ROOT / "frontend" / "src" / "components" / "LearnCard.jsx").read_text(
-        encoding="utf-8")
-    assert "Rule:" in card and "Example:" in card and "Practise this" in card
-    assert "chapter" in card and "license" in card
+    assert "LessonView" in learn
+    assert not (ROOT / "frontend" / "src" / "components" / "LearnCard.jsx").exists()
 
 
 def test_write_shows_learn_card_after_diagnosis():
     write = (ROOT / "frontend" / "src" / "screens" / "Write.jsx").read_text(encoding="utf-8")
-    assert "LearnCard" in write and "result.learn.rule" in write
-    assert "result.learn.example" in write
+    assert "CompactLesson" in write and "result.learn.idea" in write
+    assert "result.learn.example" in write and "basedOn" in write
 
 
 def test_my_growth_merged_drafts_with_feedback():

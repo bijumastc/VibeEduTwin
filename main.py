@@ -284,29 +284,384 @@ def first_sentences(text: str, n: int = 3) -> str:
 NO_VERIFIED_EXAMPLE = "No verified example in our library yet."
 
 
-def verified_excerpt(query_text: str, sentences: int = 3) -> dict:
+# Fragments counted as damage. Most are never legitimate standalone words;
+# vice/duct/port are real words but almost never standalone in writing
+# guides ("ser vice", "air duct" excepted).
+_DMG_FRAGS = ("ed|es|ly|ng|nd|nt|th|ou|ti|ts|st|sy|ny|ch|sh|wh|ck|gh|"
+              "ry|ty|dy|py|qu|un|ing|dir|der|ter|ect|vice|duct|port")
+# Split two-letter words. PASS_A runs before the single-letter rules (these
+# would misglue otherwise: "an d cons" must heal left, not to "andcons");
+# PASS_B runs after ("a t est" must heal right to "a test", not "at est").
+# Case-insensitive with an uppercase-next guard so initials survive ("A S").
+# The guard stays case-sensitive ((?-i:...) - without it the IGNORECASE flag
+# would block every repair followed by a letter).
+_PASS_A = (r"a nd|an d|i s|u s|u p|i t|o n|e nd|e ach|e very|e ven|"
+            r"e xample|e specially|e ither|e ffect|e ffort|e vidence|e xact|"
+            r"e xcept|e xplain|e arly|e asy|e nough|e ntire|e ssay")
+_PASS_B = (r"o f|t o|i n|a t|b e|y ou|y our|o r|yo u|you r|fo r|ou r|"
+           r"o ur|d o|g o|n o|m y|w e|h e|he re|s o|i f|i ts|a m|a s|p m|"
+           r"o ld|o ff|o ut|u se|u pon|a re|a ll|a n|be gin|beg in|ta ke|tak en|"
+           r"ma ke|li ke|ti me|na me|sa me|ca me|be come|bec ome|beco me|"
+           r"be fore|bef ore|befo re|be tween|bet ween|betw een|writ ten|"
+           r"wri tten|wr itten|writt en|"
+           r"th at|tha t|th is|th ey|th em|th en|th ere|th eir|th ose|th ink|"
+           r"th ing|th rough|wh at|wha t|wh en|wh ere|whe re|wh ich|whi ch|"
+           r"wh ile|whi le|ev en|ev ery|eve ry|al l|wit h|ha ve|fr om|fro m|"
+           r"bu t|be cause|bec ause|beca use|becau se|wo uld|wou ld|woul d|"
+           r"wi ll|wil l|wo rds|wor ds|wo rd|wor d|ca t|cu t|no t|do ne|h as|"
+           r"w as|we re|the y|the m|the re|the ir|th an|tho se|th ese|"
+           r"thr ough|thro ugh|thi nk|thin k|ge t|se t|le t|me t|"
+           r"a bout|a fter|a gain|a cross|a lso|a lways|a nother|a round|"
+           r"a bove|a long|e xample|e specially|e ither|e ffect|e ffort|"
+           r"e vidence|e xact|e xcept|e xplain|e arly|e asy|e nough|"
+           r"e ntire|e ssay|i nto|i dea|i mportant|i nclude|i nformation|"
+           r"o ther|o nly|o ften|o rder|o rganize|u nder|u ntil|u seful|"
+           r"u sual|u nit|y ear|y et|y oung|r eport|r eports|r esearch|"
+           r"r esult|r esults|r eader|r eaders|r eview|r eviews|r eason|"
+           r"r easons|r ule|r ules")
+
+
+def _normalize_text_marks(text: str) -> str:
+    """ASCII-fold the punctuation PDF extraction leaves behind."""
+    marks = {"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
+             "\u2013": "-", "\u2014": " - ", "\u2026": "...", "\xa0": " ",
+             "\u2022": " ", "\u25aa": " ", "\u25cf": " ", "\u25e6": " ",
+             "\u25e7": " ", "\u2023": " ", "\u2043": " ", "\u2219": " ",
+             "\u00b7": " ", "\uf0b7": " "}
+    for old, new in marks.items():
+        text = text.replace(old, new)
+    text = re.sub(r"(\w)- (\w)", r"\1\2", text)  # split words: "con- clude"
+    # Letter-spacing damage, in dependency order. Single heads exclude
+    # a/e/i/o/u/x/y ("a cat", "e mail", "x ray" stay) and r ("or not" stays).
+    text = re.sub(rf"\b({_PASS_A})\b(?!\s+(?-i:[A-Z]))",
+                  lambda m: m.group(1).replace(" ", ""), text, flags=re.IGNORECASE)
+    text = re.sub(r"([a-z]{2,}) (s)\b(?!-)", r"\1\2", text)  # plurals first
+    text = re.sub(r"\b([b-df-hj-npqsvwz]) ([a-z]{2,})\b", r"\1\2", text)
+    # Head "t" refuses a two-letter left word: "No t ever" heals to "Not
+    # ever" via PASS_B, not to "No tever".
+    text = re.sub(r"(?<![A-Za-z][A-Za-z] )\b(t) ([a-z]{2,})\b", r"\1\2", text)
+    # "ing" splits ("Sing ing") glue left, unless "incredible" follows.
+    # Runs before "ly" so "are ly ing" heals to "are lying".
+    text = re.sub(r"([a-z]{2,}) (ing)\b(?!-)(?!\s+credib\w*\b)", r"\1\2", text)
+    for tail in ("ow", "e", "n", "ur", "ou", "ck", "gh", "ng", "nd",
+                 "nt", "ts", "ly", "ce", "uct", "rt", "ort", "oduct",
+                 "rvice", "edures", "ocedures", "cedures", "dures", "ures"):
+        text = re.sub(rf"([a-z]{{2,}}) ({tail})\b(?!-)", r"\1\2", text)
+    # Tail "t" ("repor t"), but never before "o": "And t o" heals right
+    # ("And to" via PASS_B), not to "Andt o".
+    text = re.sub(r"([a-z]{2,}) (t)\b(?!-)(?!\s+o\b)", r"\1\2", text)
+    # "ed"/"es" with guards: "ed ucation" and "es say" split the other way.
+    text = re.sub(r"([a-z]{2,}) (ed)\b(?!-)(?!\s+ucat(?:ion|or)\w*\b)",
+                  r"\1\2", text)
+    text = re.sub(r"([a-z]{2,}) (es)\b(?!-)(?!\s+sa(?:y|ys)\b)", r"\1\2", text)
+    text = re.sub(rf"\b({_PASS_B})\b(?!\s+(?-i:[A-Z]))",
+                  lambda m: m.group(1).replace(" ", ""), text, flags=re.IGNORECASE)
+    text = re.sub(r"('s)([a-z])", r"\1 \2", text)  # "author'sfull"
+    return text
+
+
+# s-endings that are never verbs (for the For-example stub rule).
+_S_WORDS = {"his", "this", "that", "these", "those", "us", "as", "is",
+            "has", "was", "does", "always", "sometimes", "often",
+            "plus", "thus", "across", "unless", "yes", "its",
+            "hers", "ours", "yours", "theirs", "thesis", "analysis",
+            "basis", "crisis", "diagnosis", "emphasis", "oasis",
+            "synopsis", "hypothesis", "species", "series", "news", "lens"}
+
+
+def _has_verb_signal(sentence: str) -> bool:
+    """An auxiliary, modal, -ed/-ing form, scenario framer or s-verb."""
+    low = sentence.lower()
+    if re.search(r"\b(is|are|was|were|be|been|being|has|have|had|do|does|"
+                 r"did|will|would|can|could|should|shall|may|might|must|"
+                 r"suppose|imagine|consider|say)\b", low):
+        return True
+    if re.search(r"\b\w+(ed|ing)\b", low):
+        return True
+    words = re.findall(r"\b\w+\b", low)
+    for index, word in enumerate(words):
+        if word.endswith("s") and word not in _S_WORDS and (
+                len(words) <= 5 or index < len(words) / 2):
+            return True  # early s-word ("zoos ..."); tail nouns ("... products") lie
+    return False
+
+
+def _is_junk_sentence(sentence: str) -> bool:
+    """Headers, page numbers and pipe fragments like "| 25 •"."""
+    s = sentence.strip()
+    if not s or "|" in s:
+        return True
+    if "\u2192" in s or "\u21d2" in s or "[" in s or "__" in s:
+        return True  # outline arrows, bracket insertions, blank lines
+    if re.search(r"\b(\w+(?:\s+\w+){1,2})\s+\1\b", s, re.IGNORECASE):
+        return True  # repeated-phrase outline runs
+    if re.fullmatch(r"[\d\s.)\-–—]+", s):
+        return True
+    if re.fullmatch(r"(?i)pages?\s+\d+\.?", s):
+        return True
+    if re.search(r"\b\d+\.\d+\b", s):
+        return True  # glued section headers ("9.4 SIGNAL PHRASES ...")
+    if not re.search(r"[a-z]", s):
+        return True  # ALL-CAPS header lines and fragments
+    if re.search(r"(?i)\bchapter\s+\d+", s):
+        return True  # syllabus cross-references ("see Chapter 6")
+    if re.search(r"(?i)\b(readings|assignments?)\s*:", s):
+        return True  # course-schedule headers
+    if re.search(r"[A-Z][a-z]+\s+\d{2,3}\s+[A-Z]", s):
+        return True  # glued running head ("Essentials 227 Writing")
+    if re.search(r"(?i)except where otherwise noted|all rights reserved", s):
+        return True  # license boilerplate
+    if re.search(r"(?i)\b(canvas|blackboard|moodle)\b", s):
+        return True  # LMS instructions, not writing samples
+    if re.search(r"\s\d{1,2}\.$", s):
+        return True  # trailing list number ("activities 2.")
+    if re.match(r"(?i)(its|their|his|her|the|this|that|a|an)\s+"
+                r"(?:\w+\s+){0,3}?(purpose|function|role)\b.{0,25}"
+                r"\bis\s+(not\s+)?to\b", s):
+        return True  # context-needy purpose line ("Its purpose is to ...")
+    if re.match(r"[A-Z][a-z]*(able|ible|ive|ful|less)\s+"
+                r"(using|with|by|for|from|in|on|of)\b", s) and "," not in s:
+        return True  # bullet fragment ("Supportable using ...")
+    if re.match(r"For (example|instance)\b", s) and not _has_verb_signal(s):
+        return True  # verbless stub ("For example, in his report ...")
+    first_alpha = re.search(r"[A-Za-z]", s)
+    if (first_alpha and first_alpha.group(0).islower()
+            and not re.match(r"(?i)(e\.g\.|i\.e\.)", s)):
+        return True  # mid-sentence chunk fragment
+    return False
+
+
+def clean_sentences(doc: str) -> list[str]:
+    """Split a raw chunk into cleaned sentences, junk removed."""
+    text = _normalize_text_marks(doc or "")
+    for abbr in ("e.g.", "i.e.", "Mr.", "Ms.", "Mrs.", "Dr.", "vs."):
+        text = text.replace(abbr, abbr.replace(".", "\x00"))
+    cleaned = []
+    for part in re.split(r"(?<=[.!?])\s+", text.strip()):
+        part = part.replace("\x00", ".")
+        part = re.sub(r"^\s*(?:[*o\-]|[0-9]{1,2}[.)])\s+", "", part).strip()
+        # Page-number + running-head runs: "290 Suzan Last The study ..."
+        part = re.sub(r"^\d{1,4}\s+(?:[A-Z][a-z]+\s+){1,2}(?=[A-Z])", "", part)
+        part = re.sub(r"^\d{2,4}\s+(?=[A-Z])", "", part)
+        # Glued ALL-CAPS header runs: "References CONSTRUCTING OUTLINES An ..."
+        run = re.match(r"^((?:[A-Z][A-Za-z&'\-]*\s+){2,})(?=[A-Z])", part)
+        if run and len(re.findall(r"\b[A-Z]{2,}\b", run.group(1))) >= 2:
+            part = part[run.end(1):]
+        part = re.sub(r"\s+", " ", part).strip()
+        part = re.sub(r"\s+", " ", part).strip()
+        if part and not _is_junk_sentence(part):
+            cleaned.append(part)
+    return cleaned
+
+
+def clean_excerpt_text(doc: str) -> str:
+    """One cleaned passage from a raw chunk."""
+    return " ".join(clean_sentences(doc))
+
+
+# Words that can legitimately precede "are"/"ere" (plural subjects).
+_ARE_OK = {"you", "they", "we", "these", "those", "many", "few", "several",
+           "all", "both", "most", "some", "who", "which", "that", "there",
+           "here", "where", "what", "so", "nor", "neither", "and", "but",
+           "or", "yet", "children", "men", "women", "people", "mice",
+           "feet", "teeth", "oxen", "geese", "data", "media", "criteria",
+           "phenomena", "fish", "sheep", "deer"}
+
+
+def _artifact_count(sentence: str) -> int:
+    """Letter-spacing damage ("f ollow") PDF extraction sometimes leaves."""
+    singles = len(re.findall(r"\b(?![aAI]\b)[A-Za-z]\s+[A-Za-z]", sentence))
+    frags = len(re.findall(rf"\b(?:{_DMG_FRAGS})\b(?=\s+[a-z])", sentence))
+    mismatch = 0
+    for match in re.finditer(r"\b([A-Za-z]+) (are)\b", sentence):
+        word = match.group(1).lower()
+        if word not in _ARE_OK and not word.endswith("s"):
+            mismatch += 1  # "softw are", never "books are"
+    mismatch += len(re.findall(r"\b[A-Za-z]+ (ere)\b", sentence))
+    return singles + frags + mismatch
+
+
+def verified_excerpt(query_text: str, sentences: int = 3,
+                     prefer_discipline: str | None = None) -> dict:
     """Best library excerpt for a query, with book/chapter/license provenance.
 
     Returns {"text", "source", "chapter", "license"}; when nothing suitable
-    exists, text is NO_VERIFIED_EXAMPLE and provenance is None.
+    exists, text is NO_VERIFIED_EXAMPLE and provenance is None. Text is
+    always cleaned; with prefer_discipline, books matching the discipline
+    win over higher-ranked off-topic ones.
     """
-    docs, metas = _query_guides(query_text, n_results=3)
-    for doc, meta in zip(docs, metas):
-        text = first_sentences(doc or "", sentences)
-        if text.strip():
-            meta = meta or {}
-            return {"text": text, "source": meta.get("source"),
-                    "chapter": meta.get("chapter"), "license": meta.get("license")}
-    return {"text": NO_VERIFIED_EXAMPLE, "source": None,
-            "chapter": None, "license": None}
+    n_results = 8 if prefer_discipline else 3
+    docs, metas = _query_guides(query_text, n_results=n_results)
+    cands = []
+    for rank, (doc, meta) in enumerate(zip(docs, metas)):
+        text = " ".join(clean_sentences(doc)[:sentences] if sentences else [])
+        if not text.strip():
+            continue
+        meta = meta or {}
+        book = _book_score(meta.get("source"), prefer_discipline) if prefer_discipline else 0
+        chunk_ok = _artifact_count(doc or "") < _CHUNK_DIRT_LIMIT
+        cands.append((chunk_ok, book, -rank, text, meta))
+    if not cands:
+        return {"text": NO_VERIFIED_EXAMPLE, "source": None,
+                "chapter": None, "license": None}
+    _, _, _, text, meta = max(cands, key=lambda c: (c[0], c[1], c[2]))
+    return {"text": text, "source": meta.get("source"),
+            "chapter": meta.get("chapter"), "license": meta.get("license")}
+
+
+# Title/subject words that tie a book to a discipline (matched against the
+# manifest title first, the file name second).
+DISCIPLINE_BOOK_HINTS = {
+    "Sciences": ["scien", "technical", "lab", "physics", "chemis", "biolog"],
+    "Technology": ["technical", "technolog", "engineer", "professional"],
+    "Medicine": ["medic", "health", "nurs", "clinic"],
+    "Arts & Humanities": ["literature", "humanit", "arts", "history"],
+    "Commerce & Management": ["business", "commerce", "manag", "professional", "communication"],
+    "Social Sciences": ["social", "research", "psycholog", "sociolog"],
+}
+
+
+def _book_score(source: str | None, discipline: str | None) -> int:
+    """How well a chunk's book matches a discipline (0 when unknown)."""
+    if not discipline or discipline not in DISCIPLINE_BOOK_HINTS:
+        return 0
+    entry = _load_book_manifest().get(source or "", {})
+    haystack = f"{entry.get('title', '')} {source or ''}".lower()
+    return sum(1 for hint in DISCIPLINE_BOOK_HINTS[discipline] if hint in haystack)
+
+
+_MANIFEST_CACHE: dict | None = None
+
+
+def _load_book_manifest() -> dict:
+    """filename -> manifest entry (title, license, ...); {} when missing."""
+    global _MANIFEST_CACHE
+    if _MANIFEST_CACHE is None:
+        try:
+            path = Path(__file__).resolve().parent / "data" / "knowledge" / "manifest.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            _MANIFEST_CACHE = {b.get("filename", ""): b for b in raw.get("books", [])}
+        except Exception:
+            _MANIFEST_CACHE = {}
+    return _MANIFEST_CACHE
+
+
+def humanize_book_title(source: str | None) -> str:
+    """A display title from a file name (manifest titles win; this is backup)."""
+    name = (source or "").rsplit("/", 1)[-1]
+    if name.lower().endswith(".pdf"):
+        name = name[:-4]
+    name = re.sub(r"[-_]\d{5,}\s*$", "", name)  # trailing id stamps
+    name = re.sub(r"[-_]+", " ", name)
+    return re.sub(r"\s+", " ", name).strip() or "this guide"
+
+
+def resolve_book(source: str | None, meta_license: str | None = None) -> dict:
+    """{"title", "publisher", "license"} for a chunk source.
+
+    The title is the manifest's real title (never a file name); publisher
+    comes from the manifest when recorded, else None and the UI omits it.
+    """
+    entry = _load_book_manifest().get(source or "", {})
+    return {"title": entry.get("title") or humanize_book_title(source),
+            "publisher": entry.get("publisher"),
+            "license": meta_license or entry.get("license")}
+
+
+# Definition frames (skipped for examples) and show-frames (preferred).
+DEFINITION_MARKERS = ["defin", "refers to", "is called", "is known as",
+                      "means that", "is termed"]
+# "such as"/"e.g." usually front meta-lists ("such as visual content"),
+# while "for example"/"for instance" usually front real samples.
+SHOW_BOOSTERS = ["for example", "for instance"]
+# Meta-talk about the concept ("the topic sentence should be ...") describes
+# instead of showing. The concept must follow the/a/an (so "my thesis is
+# that ..." samples survive) with a copula or modal close behind (so "the
+# report says sales are rising" samples survive).
+_CONCEPTS = (r"topic sentence|thesis( statement)?|paragraph|essay|"
+              r"report|coherence|citation|source")
+_CONCEPT_META = re.compile(
+    rf"\b(the|a|an)\s+(?:[a-z]+\s+){{0,2}}({_CONCEPTS})s?\b.{{0,8}}\b(should|must|is|are|"
+    rf"was|were|means|makes? a claims?)\b|^(?:{_CONCEPTS})s?\b.{{0,8}}\b(should|must|is|"
+    r"are|was|were|means|makes? a claims?)\b")
+
+_STOPWORDS = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "is",
+              "are", "was", "it", "for", "with", "that", "this"}
+
+
+def _show_score(sentence: str) -> int:
+    """2 shows the thing, 1 neutral, 0 defines it (never an example)."""
+    lowered = sentence.lower()
+    if any(m in lowered for m in DEFINITION_MARKERS):
+        return 0
+    if _CONCEPT_META.search(lowered):
+        return 0
+    if any(b in lowered for b in SHOW_BOOSTERS):
+        return 2
+    return 1
+
+
+def _overlaps_rule(sentence: str, rule_text: str) -> bool:
+    """True when a candidate repeats the rule text (never show both)."""
+    a = set(re.findall(r"[a-z]+", sentence.lower())) - _STOPWORDS
+    b = set(re.findall(r"[a-z]+", (rule_text or "").lower())) - _STOPWORDS
+    if not a or not b:
+        return True
+    return len(a & b) / min(len(a), len(b)) >= 0.6
+
+
+# Chunks with this much raw letter-spacing damage have more hiding in
+# them (damage clusters by page), so their sentences lose.
+_CHUNK_DIRT_LIMIT = 3
+
+
+def select_showing_example(query_base: str, genre: str, discipline: str,
+                           rule_text: str) -> dict:
+    """One cleaned example sentence that SHOWS the thing, with provenance.
+
+    Prefers showing passages from discipline-matching books, never repeats
+    the rule text, and falls back to NO_VERIFIED_EXAMPLE with nulls.
+    """
+    docs, metas = _query_guides(f"{query_base} example {genre}", n_results=8)
+    cands = []
+    for rank, (doc, meta) in enumerate(zip(docs, metas)):
+        meta = meta or {}
+        book = _book_score(meta.get("source"), discipline)
+        chunk_ok = _artifact_count(doc or "") < _CHUNK_DIRT_LIMIT
+        for sent in clean_sentences(doc):
+            if len(sent) < 35 or sent.endswith("?") or _overlaps_rule(sent, rule_text):
+                continue
+            cands.append({"sent": sent, "show": _show_score(sent), "book": book,
+                          "rank": rank, "meta": meta, "chunk_ok": chunk_ok,
+                          "dirty": _artifact_count(sent) > 0})
+    pool = ([c for c in cands if c["show"] >= 1 and c["chunk_ok"]]
+            or [c for c in cands if c["show"] >= 1] or cands)
+    if not pool:
+        return {"text": NO_VERIFIED_EXAMPLE, "source": None,
+                "chapter": None, "license": None}
+    best = max(pool, key=lambda c: (not c["dirty"], c["book"], c["show"], -c["rank"]))
+    meta = best["meta"]
+    return {"text": best["sent"], "source": meta.get("source"),
+            "chapter": meta.get("chapter"), "license": meta.get("license")}
 
 
 def learn_card(skill: str, level: int, discipline: str) -> dict:
     """Build a short Learn card from verified library excerpts only."""
     genre = DISCIPLINE_GENRES[discipline]
+    rule = verified_excerpt(f"{skill} writing rule", 2, prefer_discipline=discipline)
+    example = select_showing_example(f"{skill} writing", genre, discipline, rule["text"])
+    books = []
+    for part in (rule, example):
+        if part["source"]:
+            books.append(resolve_book(part["source"], part["license"]))
+    seen, based_on = set(), []
+    for book in books:
+        if book["title"] not in seen:
+            seen.add(book["title"])
+            based_on.append(book)
     return {"skill": skill, "level": level, "discipline": discipline,
-            "rule": verified_excerpt(f"{skill} writing rule"),
-            "example": verified_excerpt(f"{skill} writing example {genre}")}
+            "idea": {"text": rule["text"]}, "example": {"text": example["text"]},
+            "based_on": based_on}
 
 
 # --- Curriculum ---------------------------------------------------------------
@@ -341,7 +696,7 @@ def genre_module(discipline: str) -> dict:
     genre = DISCIPLINE_GENRES[discipline]
     return {"id": "genre", "title": (genre + "s").capitalize(),
             "skill": "Academic tone", "required_level": 3,
-            "query": f"{genre} writing"}
+            "query": f"{genre} introduction opening"}
 
 
 def discipline_modules(discipline: str) -> list[dict]:
@@ -381,6 +736,170 @@ def module_rule_query(module: dict) -> str:
 def module_example_query(module: dict, genre: str) -> str:
     """ChromaDB query for a module's discipline example excerpt."""
     return f"{module['query']} example {genre}"
+
+
+# --- Lessons: one idea per screen -------------------------------------------------
+# (a) Hook: scenario, never invented facts. (b) Try first: predict or choose
+# (abstract options only, never example sentences). (c) The idea: paraphrase
+# of the retrieved excerpt, verified claim by claim. (d) Real example: a
+# cleaned book quote. (e) Your turn: the scaffolded task. (f) Why it matters:
+# one twin-voiced line. Placeholders: {topic} {genre} {art} {Art}.
+LESSON_HOOKS = {
+    "topic-sentences": "Imagine opening a {genre} and the first line tells you nothing. Would you keep reading?",
+    "thesis-statements": "A friend asks what you think about {topic}. You get one line. What do you say?",
+    "developing-paragraphs": "One strong line about {topic} stands alone on a page. Is it enough to convince you?",
+    "coherence-flow": "Two true lines about {topic} sit side by side, yet the reader is lost. What is missing between them?",
+    "using-sources": "You read a striking claim about {topic} with no source named. Do you trust it?",
+    "genre": "Your {genre} about {topic} lands on a busy reader's desk. What must they see first?",
+}
+
+LESSON_TRY = {
+    "topic-sentences": {
+        "prompt": "A paragraph about {topic} needs a first line. What should that line do?",
+        "options": ["Tell the main idea", "List every detail", "Close the topic"],
+        "answer": 0,
+        "reveal": "The main idea comes first. The next card shows why."},
+    "thesis-statements": {
+        "prompt": "You hold a view on {topic}. What must your thesis line do?",
+        "options": ["State your view", "Describe everything", "Ask a question"],
+        "answer": 0,
+        "reveal": "A thesis states your view. Details come later."},
+    "developing-paragraphs": {
+        "prompt": "Your first line states the main idea. What should the next lines do?",
+        "options": ["Prove it", "Change the topic", "Repeat it word for word"],
+        "answer": 0,
+        "reveal": "Each line must prove the first one."},
+    "coherence-flow": {
+        "prompt": "Two lines about {topic} sit side by side. The reader is lost. What is missing?",
+        "options": ["A link between them", "Longer words", "More lines"],
+        "answer": 0,
+        "reveal": "A linker shows how ideas connect."},
+    "using-sources": {
+        "prompt": "You borrow an idea about {topic}. What must you add?",
+        "options": ["The source name", "Bigger words", "More ideas"],
+        "answer": 0,
+        "reveal": "Name the source, then use your own words."},
+    "genre": {
+        "prompt": "You open {art} {genre} about {topic}. What should the first lines give?",
+        "options": ["The key facts", "A long greeting", "A joke"],
+        "answer": 0,
+        "reveal": "Report readers want the key facts first."},
+}
+
+LESSON_IDEAS = {
+    "topic-sentences": "A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.",
+    "thesis-statements": "A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.",
+    "developing-paragraphs": "One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.",
+    "coherence-flow": "Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.",
+    "using-sources": "Name the source each time you borrow. Citations point to the author. Your own words carry your voice.",
+    "genre": "{Art} {genre} reports facts in order. It opens with what matters most. Short parts keep it easy to scan.",
+}
+
+# One keyword set per claim; a claim passes when ANY keyword appears in the
+# excerpt (case-insensitive substring). All claims must pass (AND).
+LESSON_IDEA_CLAIMS = {
+    "topic-sentences": [
+        {"label": "topic sentence", "keywords": ["topic"]},
+        {"label": "main idea", "keywords": ["main", "point", "controlling"]},
+        {"label": "comes first", "keywords": ["first", "opening", "begin"]},
+        {"label": "rest follows", "keywords": ["follow", "rest", "detail", "support"]}],
+    "thesis-statements": [
+        {"label": "states view", "keywords": ["thesis", "view", "position", "argu"]},
+        {"label": "debatable", "keywords": ["debat", "argu", "claim", "opinion"]},
+        {"label": "not fact", "keywords": ["fact"]},
+        {"label": "lines prove it", "keywords": ["prov", "support", "evidence"]}],
+    "developing-paragraphs": [
+        {"label": "one point", "keywords": ["paragraph", "point"]},
+        {"label": "proof or detail", "keywords": ["proof", "detail", "support", "content", "example"]},
+        {"label": "cut wanderers", "keywords": ["cut", "remov", "delet", "unity", "coheren", "relevant", "focus", "topic"]}],
+    "coherence-flow": [
+        {"label": "flow", "keywords": ["flow"]},
+        {"label": "clear order", "keywords": ["smooth", "clear", "order", "structure", "organiz"]},
+        {"label": "linkers", "keywords": ["link", "connect", "transition", "cohesi"]}],
+    "using-sources": [
+        {"label": "name source", "keywords": ["source", "cite", "citation"]},
+        {"label": "point to author", "keywords": ["author", "credit", "attribut", "writer"]},
+        {"label": "own words", "keywords": ["own", "voice", "paraphras", "word", "paper"]}],
+    "genre": [
+        {"label": "reports facts", "keywords": ["report", "essay", "paper", "document", "account"]},
+        {"label": "opens first", "keywords": ["first", "open", "begin", "introduction", "lead"]},
+        {"label": "short parts", "keywords": ["short", "clear", "scan", "concise", "section"]}],
+}
+
+LESSON_WHY = {
+    "topic-sentences": "I open with one clear line. My reader knows where we go.",
+    "thesis-statements": "My one-line view keeps my whole piece on track.",
+    "developing-paragraphs": "I prove each line before I move on.",
+    "coherence-flow": "I link every line to the next. My reader never gets lost.",
+    "using-sources": "I name each source I use. My work earns trust.",
+    "genre": "I learned the {genre} shape once. Now each {genre} follows it.",
+}
+
+
+def _select_grounded_idea(module: dict, discipline: str) -> tuple[str, dict | None, bool]:
+    """(idea text, excerpt meta or None, authored?) for a lesson.
+
+    Tries rule-query candidates until the grounding verifier passes,
+    preferring discipline-matching books; falls back to quoting the top
+    excerpt when nothing supports the authored idea.
+    """
+    docs, metas = _query_guides(module_rule_query(module), n_results=8)
+    passing = []
+    first_text, first_meta = "", None
+    for rank, (doc, meta) in enumerate(zip(docs, metas)):
+        cleaned = clean_excerpt_text(doc)
+        if not cleaned.strip():
+            continue
+        meta = meta or {}
+        if not first_text:
+            first_text = " ".join(clean_sentences(doc)[:2])
+            first_meta = meta
+        verdict = verify("lesson_idea", {"module": module["id"], "excerpt": cleaned})
+        if verdict["pass"]:
+            passing.append((_book_score(meta.get("source"), discipline), -rank, meta))
+    if passing:
+        _, _, meta = max(passing, key=lambda c: (c[0], c[1]))
+        return LESSON_IDEAS[module["id"]], meta, True
+    if first_text:
+        return first_text, first_meta, False
+    return NO_VERIFIED_EXAMPLE, None, False
+
+
+def build_lesson(discipline: str, module_id: str) -> dict:
+    """Assemble the six lesson screens for a discipline module."""
+    modules = {m["id"]: m for m in discipline_modules(discipline)}
+    module = modules[module_id]
+    genre = DISCIPLINE_GENRES[discipline]
+    topic = DISCIPLINE_TOPICS[discipline]
+    idea_text, idea_meta, authored = _select_grounded_idea(module, discipline)
+    art = "an" if genre == "essay" else "a"
+    if authored:
+        idea_text = idea_text.format(genre=genre, topic=topic, art=art, Art=art.capitalize())
+    example = select_showing_example(module["query"], genre, discipline, idea_text)
+    books = []
+    if idea_meta and idea_meta.get("source"):
+        books.append(resolve_book(idea_meta["source"], idea_meta.get("license")))
+    if example["source"]:
+        books.append(resolve_book(example["source"], example["license"]))
+    seen, based_on = set(), []
+    for book in books:
+        if book["title"] not in seen:
+            seen.add(book["title"])
+            based_on.append(book)
+    try_block = LESSON_TRY[module_id]
+    fmt = {"topic": topic, "genre": genre, "art": art, "Art": art.capitalize()}
+    return {"discipline": discipline, "module": module_id, "title": module["title"],
+            "skill": module["skill"],
+            "hook": LESSON_HOOKS[module_id].format(**fmt),
+            "try_first": {"prompt": try_block["prompt"].format(**fmt),
+                          "options": [o.format(**fmt) for o in try_block["options"]],
+                          "answer": try_block["answer"],
+                          "reveal": try_block["reveal"].format(**fmt)},
+            "idea": {"text": idea_text},
+            "example": {"text": example["text"]},
+            "task": scaffold_task(discipline, module_id),
+            "why": LESSON_WHY[module_id].format(**fmt),
+            "based_on": based_on}
 
 
 # --- Productive-struggle scaffolding --------------------------------------------
@@ -1107,6 +1626,7 @@ VERIFY_FIXES = {
     "has-answer": "Add the answer.",
     "answer-matches-option": "Make the answer match one option.",
     "has-explanation": "Add an explanation (learners need feedback).",
+    "grounded-in-excerpt": "Use an excerpt that supports every claim.",
 }
 
 # Structural subset for the curated bank (exempt from no-invented-examples).
@@ -1188,11 +1708,22 @@ def _verify_practice_item_rules(item: dict) -> list[str]:
     return failed
 
 
+def _verify_lesson_idea_rules(payload: dict) -> list[str]:
+    """One failure per idea claim the excerpt does not support."""
+    claims = LESSON_IDEA_CLAIMS.get((payload or {}).get("module"), [])
+    excerpt = ((payload or {}).get("excerpt") or "").lower()
+    failed = []
+    for i, claim in enumerate(claims):
+        if not any(k in excerpt for k in claim["keywords"]):
+            failed.append(f"claim {i + 1} ({claim['label']}): grounded-in-excerpt")
+    return failed
+
+
 def verify(kind: str, payload, context: dict | None = None,
            rules: list[str] | None = None) -> dict:
     """Run the docs/plan.md checklist. Replies only in JSON.
 
-    kind: "twin_reply" | "practice_item" | "practice_set".
+    kind: "twin_reply" | "practice_item" | "practice_set" | "lesson_idea".
     context: {"message": learner text} for twin replies.
     rules: optional subset of rule ids (used for the curated bank).
     """
@@ -1203,6 +1734,8 @@ def verify(kind: str, payload, context: dict | None = None,
     elif kind == "practice_item":
         failed = [r for r in _verify_practice_item_rules(payload)
                   if rules is None or r in rules]
+    elif kind == "lesson_idea":
+        failed = _verify_lesson_idea_rules(payload)
     elif kind == "practice_set":
         failed = []
         if not payload:
@@ -1309,9 +1842,8 @@ def parse_teacher_request(request_text: str) -> dict:
 
 
 def _excerpt_sentences(doc: str, max_n: int = 12) -> list[str]:
-    """Sentences of one excerpt, preferring substantial ones."""
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", (doc or "").strip())]
-    parts = [p for p in parts if p]
+    """Cleaned sentences of one excerpt, preferring substantial ones."""
+    parts = clean_sentences(doc)
     long = [p for p in parts if len(p) >= 25]
     return (long if len(long) >= 2 else parts)[:max_n]
 
@@ -1378,6 +1910,9 @@ def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
     pool = [(d, m or {}) for d, m in zip(docs, metas) if (d or "").strip()]
     if not pool:
         return []
+    if parsed["discipline"]:
+        pool = sorted(pool, key=lambda dm: _book_score(
+            (dm[1] or {}).get("source"), parsed["discipline"]), reverse=True)
     others = [s for s in SKILLS if s != skill][:2]
     dpool: list[str] = []
     for other in others:
@@ -1534,15 +2069,11 @@ def _module_state_or_raise(learner_id: int, discipline: str,
 
 @app.get("/curriculum/modules")
 def get_curriculum_module(learner_id: int, discipline: str, module: str):
-    """Learn step: one module's verified rule + example excerpts."""
-    _, content = _module_state_or_raise(learner_id, discipline, module)
-    genre = DISCIPLINE_GENRES[discipline]
+    """Learn step: the six-screen lesson for a module."""
+    _module_state_or_raise(learner_id, discipline, module)
     store.log_event(learner_id, "Learn", "twin", "get_module",
                     f"discipline={discipline} module={module}")
-    return {"discipline": discipline, "module": module, "title": content["title"],
-            "skill": content["skill"],
-            "rule": verified_excerpt(module_rule_query(content)),
-            "example": verified_excerpt(module_example_query(content, genre))}
+    return build_lesson(discipline, module)
 
 
 def _scaffold_view(attempt_id: str, attempt: dict, extra: dict | None = None) -> dict:
