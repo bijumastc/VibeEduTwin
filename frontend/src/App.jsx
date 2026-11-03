@@ -25,7 +25,7 @@ export default function App() {
         {tab === 'home' && <Home go={go} />}
         {tab === 'write' && <Write go={go} />}
         {tab === 'learn' && <Learn go={go} />}
-        {tab === 'practice' && <Practice />}
+        {tab === 'practice' && <Practice go={go} />}
         {tab === 'growth' && <MyGrowth go={go} />}
         {tab === 'teacher' && <Teacher go={go} />}
       </main>

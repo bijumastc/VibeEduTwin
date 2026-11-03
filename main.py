@@ -79,8 +79,8 @@ SKILLS = ["Grammar", "Vocabulary", "Sentence structure", "Paragraphing",
           "Argument", "Using sources", "Academic tone"]
 
 # Score -> level bands. Keep in sync with level_for_score().
-LEVEL_PASS_SCORE = 80  # practice accuracy % needed to bump a skill
-SKILL_BUMP = 10        # points added to a skill after a strong practice set
+# Practice scoring is per answer now (see ASSESS_BUMPS with the assessor):
+# each answer earns 0-2 and the set bump is the sum, so no pass threshold.
 
 # Issued practice sets: set_id -> {learner_id, skill, level, answers}.
 # In-memory for the demo; a real deployment would persist these.
@@ -1674,6 +1674,345 @@ def worked_model(module_id: str, discipline: str) -> str:
         genre=DISCIPLINE_GENRES[discipline])
 
 
+# --- Attempt assessor (Muse Spark, JSON output) ---------------------------------
+# Every free-text scaffold try is judged against the task and the module
+# rubric: Spark returns a verdict, feedback fields, a 0-2 score and the next
+# ladder step. Short nonsense and copies of the served pattern are caught
+# deterministically without calling Spark. Feedback is assembled server-side
+# (strength?, problem quoting the learner, next action), verified, and only
+# then served; anything failing falls back to the fixed ladder silently.
+SCAFFOLD_RUBRICS = {
+    "topic-sentences": ["Names the paragraph topic.",
+                        "States one specific point the paragraph will prove.",
+                        "Is one complete sentence."],
+    "thesis-statements": ["Takes a debatable side, not a plain fact.",
+                          "Gives a reason in the same line.",
+                          "Is one complete sentence."],
+    "developing-paragraphs": ["Keeps one main idea across three lines.",
+                              "Each line proves the main line.",
+                              "Cuts lines that wander off."],
+    "coherence-flow": ["Has two true lines about the topic.",
+                       "Joins them with a fitting linker.",
+                       "Reads smoothly from line to line."],
+    "using-sources": ["Names the source with According to.",
+                      "Puts the borrowed point in own words.",
+                      "Is one complete sentence."],
+    "genre": ["Opens with the fact readers need first.",
+              "Uses calm, exact words.",
+              "Fits the {genre} shape."],
+}
+
+# Attempt score -> skill points. Levels move through level_for_score.
+ASSESS_BUMPS = {0: 0, 1: 5, 2: 10}
+
+ASSESS_KIND_LINES = {
+    "off_task": "That does not match the task yet.",
+    "nonsense": "I cannot follow that yet.",
+    "copied": "That matches the book pattern too closely.",
+}
+ASSESS_RETRY_LINES = {
+    "off_task": "Try the task itself in your own words.",
+    "nonsense": "Write one clear line for the task.",
+    "copied": "Write it again in your own words.",
+}
+
+SPARK_ASSESSOR_SYSTEM = (
+    "You judge a learner's writing try for a first-year Indian undergraduate. "
+    "Reply with a JSON object only, no other text, with keys: status (ok, "
+    "off_task, nonsense or copied), strength (one sentence naming a real "
+    "strength, or empty when there is none), problem (one sentence naming "
+    "the one main problem, quoting the learner's own words), quote (the "
+    "exact quoted words), next_action (one sentence telling the learner "
+    "what to do next), score (0, 1 or 2 against the rubric) and next_step "
+    "(retry, question, hint, excerpt or rewrite). For language errors, "
+    "point to them without rewriting the sentence. For claims that look "
+    "wrong, ask a question instead of correcting, and never invent facts.")
+
+
+def _assessor_messages(module_id: str, discipline: str, attempt: dict,
+                       text: str) -> list[dict]:
+    """Prompt: task, rubric, the try, and the must-not-copy references."""
+    rubric = [c.format(genre=DISCIPLINE_GENRES[discipline])
+              for c in SCAFFOLD_RUBRICS[module_id]]
+    refs = f"Model pattern: {worked_model(module_id, discipline)}"
+    if attempt.get("excerpt_text"):
+        refs += f" Shown excerpt: {attempt['excerpt_text']}"
+    user = (f"Task: {scaffold_task(discipline, module_id)} "
+            f"Rubric: {' '.join(f'{i + 1}. {c}' for i, c in enumerate(rubric))} "
+            f"Learner try: {text} {refs}")
+    return [{"role": "system", "content": SPARK_ASSESSOR_SYSTEM},
+            {"role": "user", "content": user}]
+
+
+def _as_sentence(text: str | None) -> str:
+    text = (text or "").strip()
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def _validate_assessment(data: dict) -> dict | None:
+    """Validated assessor fields, or None when Spark output is unusable."""
+    if not isinstance(data, dict):
+        return None
+    status, score = data.get("status"), data.get("score")
+    if status not in ("ok", "off_task", "nonsense", "copied"):
+        return None
+    if not isinstance(score, int) or isinstance(score, bool) \
+            or score not in (0, 1, 2):
+        return None
+    if status != "ok":
+        score = 0
+    next_step = data.get("next_step")
+    if next_step not in ("retry", "question", "hint", "excerpt", "rewrite",
+                         "next", "study"):
+        next_step = "question"
+    fields = {"status": status, "score": score, "next_step": next_step,
+              "strength": _as_sentence(data.get("strength")),
+              "problem": _as_sentence(data.get("problem")),
+              "quote": str(data.get("quote") or "").strip(),
+              "next_action": _as_sentence(data.get("next_action"))}
+    if status == "ok" and (not fields["next_action"] or not fields["quote"]):
+        return None
+    if status == "ok" and fields["score"] < 2 and not fields["problem"]:
+        return None
+    return fields
+
+
+def _parse_assessment(raw: str) -> dict | None:
+    """Validated assessor fields from one JSON object, else None."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return _validate_assessment(data)
+
+
+def _assessment_feedback(fields: dict) -> str:
+    """Strength?, problem, next action - or the kind retry pair."""
+    if fields["status"] == "ok":
+        parts = (([fields["strength"]] if fields["strength"] else [])
+                 + ([fields["problem"]] if fields["problem"] else [])
+                 + [fields["next_action"]])
+    else:
+        parts = [ASSESS_KIND_LINES[fields["status"]],
+                 fields["next_action"]
+                 or ASSESS_RETRY_LINES[fields["status"]]]
+    return " ".join(parts)
+
+
+def _copied_pattern(module_id: str, discipline: str, attempt: dict,
+                    text: str) -> bool:
+    """True when the try overlaps the served model or excerpt."""
+    refs = [worked_model(module_id, discipline)]
+    if attempt.get("excerpt_text"):
+        refs.append(attempt["excerpt_text"])
+    return any(_overlaps_rule(text, ref) for ref in refs)
+
+
+def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
+    """Assess one try: gates, Spark, verify, score. None means skip it."""
+    module_id, discipline = attempt["module"], attempt["discipline"]
+    if len(text.split()) < 3:
+        fields = {"status": "nonsense", "score": 0, "next_step": "retry",
+                  "strength": "", "problem": "", "quote": "", "next_action": ""}
+    elif _copied_pattern(module_id, discipline, attempt, text):
+        fields = {"status": "copied", "score": 0, "next_step": "retry",
+                  "strength": "", "problem": "", "quote": "", "next_action": ""}
+    else:
+        try:
+            raw = _spark_chat(_assessor_messages(
+                module_id, discipline, attempt, text))
+        except SparkError:
+            return None
+        parsed = _parse_assessment(raw)
+        if parsed is None:
+            return None
+        fields = parsed
+    feedback = _assessment_feedback(fields)
+    verdict = verify("assessor", {"status": fields["status"], "feedback": feedback,
+                                  "attempt": text, "quote": fields["quote"],
+                                  "score": fields["score"]})
+    if not verdict["pass"]:
+        store.log_event(learner_id, "Scaffold", "twin", "verify-assess",
+                        f"attempt rejected: {verdict['failed']}")
+        return None
+    weak = fields["status"] != "ok" or fields["score"] < 2
+    attempt["weak"] = 0 if not weak else attempt.get("weak", 0) + 1
+    skill = attempt["skill"]
+    bump = ASSESS_BUMPS[fields["score"]]
+    current = latest_scores(learner_id).get(skill, 0)
+    new_score = min(100, current + bump)
+    if bump:
+        store.save_skill_scores(learner_id, {skill: new_score})
+    store.log_event(learner_id, "Scaffold", "twin", "assess",
+                    f"score={fields['score']}/2 status={fields['status']}")
+    return {"status": fields["status"], "feedback": feedback,
+            "quote": fields["quote"], "score": fields["score"],
+            "next_step": fields["next_step"], "skill": skill,
+            "skill_score": new_score,
+            "skill_level": level_for_score(new_score)}
+
+
+# --- Practice Assessor ----------------------------------------------------------
+# Closed answers (a picked option, an ordering) are judged against the module
+# rubric in one Spark batch per set: ordered feedback quoting the choice, a
+# 0-2 score each, and study routing after repeated wrongs. Deterministic
+# templates cover no-key, failure, invalid output, and skills without a
+# module, so every answer is always assessed and scored.
+SKILL_MODULE = {"Paragraphing": "topic-sentences",
+                "Argument": "thesis-statements",
+                "Sentence structure": "coherence-flow",
+                "Using sources": "using-sources",
+                "Academic tone": "genre"}
+
+SPARK_PRACTICE_SYSTEM = (
+    "You judge practice answers for a first-year Indian undergraduate. "
+    "Reply with a JSON array only, no other text: one object per answer, in "
+    "order, each with id, strength (one sentence naming a real strength, or "
+    "empty when there is none), problem (one sentence naming the main "
+    "problem and quoting the learner's answer; empty when the answer is "
+    "fully correct), quote (exact words from the learner's answer), "
+    "next_action (one sentence telling the learner what to do next) and "
+    "score (2 when correct, else 0 or 1). Never invent facts.")
+
+
+def _order_prompt_sentences(prompt: str) -> dict:
+    """{number: sentence} from '1) ...' runs (apostrophes inside are fine)."""
+    marks = [(m.start(), m.group(1))
+             for m in re.finditer(r"(\d+)\)\s*'", prompt or "")]
+    sents = {}
+    for k, (pos, num) in enumerate(marks):
+        end = marks[k + 1][0] if k + 1 < len(marks) else len(prompt or "")
+        seg = (prompt or "")[pos + len(num) + 3:end]
+        cut = seg.rfind("'")
+        sents[num] = seg[:cut].strip() if cut >= 0 else seg.strip()
+    return sents
+
+
+def _practice_answer_text(item: dict, given: str) -> str:
+    """The learner's answer in words: chosen option, ordered sentences."""
+    given = (given or "").strip()
+    if item["type"] == "mcq":
+        for option in item["options"]:
+            if option.startswith(given.upper() + ")"):
+                return option.split(")", 1)[1].strip()
+        return ""
+    parts = [p.strip() for p in given.split(",") if p.strip()]
+    if not parts or any(not p.isdigit() for p in parts):
+        return ""
+    sents = _order_prompt_sentences(item["prompt"])
+    try:
+        return " ".join(sents[p] for p in parts)
+    except KeyError:
+        return f"order {given}"
+
+
+def _practice_assess_messages(skill: str, module_id: str, discipline: str,
+                              answers: list[dict]) -> list[dict]:
+    """One batch prompt: rubric plus every judged answer with its verdict."""
+    rubric = [c.format(genre=DISCIPLINE_GENRES[discipline])
+              for c in SCAFFOLD_RUBRICS[module_id]]
+    lines = [
+        f"A{i + 1} (id {ans['id']}): {ans['prompt']} "
+        f"Options: {' / '.join(ans['options'])} "
+        f"Learner answer: {ans['choice']} "
+        f"Correct: {'yes' if ans['correct'] else 'no'}."
+        for i, ans in enumerate(answers)]
+    user = (f"Skill: {skill}. "
+            f"Rubric: {' '.join(f'{i + 1}. {c}' for i, c in enumerate(rubric))} "
+            f"Judge each answer:\n" + "\n".join(lines))
+    return [{"role": "system", "content": SPARK_PRACTICE_SYSTEM},
+            {"role": "user", "content": user}]
+
+
+def _practice_template_fields(choice: str, correct: bool, given: str) -> dict:
+    """Deterministic assessment (needs no rubric beyond the verdict)."""
+    if not choice:
+        return {"status": "ok", "strength": "",
+                "problem": "You gave no answer here.", "quote": "no answer",
+                "next_action": "Pick an option before moving on.", "score": 0}
+    attempt = choice if len(choice.strip()) >= 4 else f"option {given}: {choice}"
+    if correct:
+        return {"status": "ok", "strength": f"Correct: \"{attempt}\".",
+                "problem": "", "quote": attempt,
+                "next_action": "Keep going.", "score": 2}
+    return {"status": "ok", "strength": "",
+            "problem": f"Not this time: you chose \"{attempt}\".",
+            "quote": attempt,
+            "next_action": "Read the explanation below, then continue.",
+            "score": 0}
+
+
+def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
+                        answers: dict) -> dict:
+    """{item_id: assessment}: one Spark batch, templates for the rest."""
+    module_id = SKILL_MODULE.get(skill)
+    judged: dict[str, tuple] = {}
+    sparkable = []
+    for item in items:
+        given = answers.get(item["id"], "")
+        ok = check_answer(item, given)
+        choice = _practice_answer_text(item, given)
+        if not choice or module_id is None:
+            judged[item["id"]] = (choice, ok, _practice_template_fields(
+                choice, ok, (given or "").strip()))
+        else:
+            sparkable.append({"id": item["id"], "prompt": item["prompt"],
+                              "options": item["options"], "choice": choice,
+                              "correct": ok})
+    if sparkable:
+        learner = store.get_learner(learner_id) or {}
+        discipline = learner.get("discipline") or "Sciences"
+        try:
+            raw = _spark_chat(_practice_assess_messages(
+                skill, module_id, discipline, sparkable))
+            data = json.loads(raw)
+            drafts = {d["id"]: d for d in data
+                      if isinstance(d, dict) and "id" in d} \
+                if isinstance(data, list) else {}
+        except (SparkError, ValueError):
+            drafts = {}
+        rejected = []
+        for ans in sparkable:
+            fields = _validate_assessment(drafts.get(ans["id"], {}))
+            if fields is not None and (
+                    fields["status"] != "ok"
+                    or (fields["score"] == 2) != ans["correct"]):
+                fields = None
+            if fields is not None:
+                feedback = _assessment_feedback(fields)
+                verdict = verify("assessor", {
+                    "status": "ok", "feedback": feedback,
+                    "attempt": ans["choice"], "quote": fields["quote"],
+                    "score": fields["score"]})
+                if not verdict["pass"]:
+                    rejected.append(ans["id"])
+                    fields = None
+            if fields is None:
+                given = answers.get(ans["id"], "")
+                fields = _practice_template_fields(
+                    ans["choice"], ans["correct"], (given or "").strip())
+            judged[ans["id"]] = (ans["choice"], ans["correct"], fields)
+        if rejected:
+            store.log_event(learner_id, "Practise", "twin", "verify-assess",
+                            f"items rejected: {rejected}")
+    out = {}
+    wrongs = 0
+    for item in items:
+        _choice, ok, fields = judged[item["id"]]
+        if not ok and wrongs >= 2 and module_id is not None:
+            next_step: str = "study"
+        else:
+            next_step = "next"
+        if not ok:
+            wrongs += 1
+        out[item["id"]] = {"feedback": _assessment_feedback(fields),
+                           "score": fields["score"], "next_step": next_step,
+                           "module": module_id, "skill": skill}
+    return out
+
+
 # --- Heuristic skill scorers (demo logic; Muse Spark plugs in here) -----------------
 def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
@@ -2315,6 +2654,9 @@ VERIFY_FIXES = {
                       "the task's topic word.",
     "grounded-in-excerpts": "Quote example sentences word-for-word from the "
                             "shown excerpts.",
+    "valid-score": "Score the attempt 0, 1 or 2.",
+    "feedback-shape": "Give 2-4 short feedback sentences.",
+    "quotes-learner": "Quote the learner's own words in the feedback.",
 }
 
 # Structural subset for the curated bank (exempt from no-invented-examples).
@@ -2414,6 +2756,27 @@ WORKED_CONTROL_MARKERS = ("explain", "explains", "show", "shows", "prove",
                           "proves", "should", "because", "why")
 
 
+def _verify_assessor_rules(payload: dict) -> list[str]:
+    """An assessment must score 0-2, run 2-4 sentences, quote the learner."""
+    payload = payload or {}
+    failed = []
+    score = payload.get("score")
+    if not isinstance(score, int) or isinstance(score, bool) \
+            or score not in (0, 1, 2):
+        failed.append("valid-score")
+    sents = [s for s in re.split(r"[.!?]+", (payload.get("feedback") or "").strip())
+             if s.strip()]
+    if not 2 <= len(sents) <= 4:
+        failed.append("feedback-shape")
+    if (payload.get("status") or "ok") == "ok":
+        quote = _normalized(payload.get("quote") or "")
+        if len(quote) < 4 \
+                or quote not in _normalized(payload.get("attempt") or "") \
+                or quote not in _normalized(payload.get("feedback") or ""):
+            failed.append("quotes-learner")
+    return failed
+
+
 def _verify_excerpt_grounding_rules(payload: dict) -> list[str]:
     """One failure per item quoting no excerpt sentence verbatim."""
     payload = payload or {}
@@ -2448,7 +2811,7 @@ def verify(kind: str, payload, context: dict | None = None,
     """Run the docs/plan.md checklist. Replies only in JSON.
 
     kind: "twin_reply" | "practice_item" | "practice_set" | "lesson_idea"
-      | "worked_model" | "excerpt_grounding".
+      | "worked_model" | "excerpt_grounding" | "assessor".
     context: {"message": learner text} for twin replies.
     rules: optional subset of rule ids (used for the curated bank).
     """
@@ -2465,6 +2828,8 @@ def verify(kind: str, payload, context: dict | None = None,
         failed = _verify_worked_model_rules(payload)
     elif kind == "excerpt_grounding":
         failed = _verify_excerpt_grounding_rules(payload)
+    elif kind == "assessor":
+        failed = _verify_assessor_rules(payload)
     elif kind == "practice_set":
         failed = []
         if not payload:
@@ -3006,10 +3371,112 @@ def _serve_excerpt(learner_id: int, attempt_id: str, attempt: dict,
     modules = {m["id"]: m for m in discipline_modules(attempt["discipline"])}
     excerpt = verified_excerpt(
         module_example_query(modules[attempt["module"]], genre))
+    if excerpt.get("source"):
+        excerpt["book"] = resolve_book(excerpt["source"], excerpt.get("license"))
+        attempt["excerpt_text"] = excerpt["text"]
+    else:
+        excerpt["book"] = None
+        attempt["excerpt_text"] = ""
     attempt["step"] = "excerpt"
     store.log_event(learner_id, "Scaffold", "twin", tool,
                     f"attempt_id={attempt_id} module={attempt['module']}")
     return _scaffold_view(attempt_id, attempt, {"excerpt": excerpt})
+
+
+def _select_module_rule(module: dict, discipline: str) -> dict:
+    """The rule-query excerpt best matching the module's rule claims.
+
+    Candidates score by claim-keyword hits first, then discipline book fit,
+    then rank. With no keyword match anywhere the honest empty message wins
+    over an irrelevant excerpt.
+    """
+    docs, metas = _query_guides(module_rule_query(module), n_results=8)
+    claims = LESSON_IDEA_CLAIMS.get(module["id"], [])
+    best = None
+    for rank, (doc, meta) in enumerate(zip(docs, metas)):
+        sents = clean_sentences(doc)
+        if not sents:
+            continue
+        text = " ".join(sents[:2])
+        low = text.lower()
+        hits = sum(1 for claim in claims
+                   if any(k.lower() in low for k in claim["keywords"]))
+        if hits == 0:
+            continue
+        meta = meta or {}
+        key = (hits, _book_score(meta.get("source"), discipline), -rank)
+        if best is None or key > best[0]:
+            best = (key, text, meta)
+    if best is None:
+        return {"text": NO_VERIFIED_EXAMPLE, "source": None, "chapter": None,
+                "license": None, "book": None}
+    _, text, meta = best
+    return {"text": text, "source": meta.get("source"),
+            "chapter": meta.get("chapter"), "license": meta.get("license"),
+            "book": resolve_book(meta.get("source"), meta.get("license"))
+            if meta.get("source") else None}
+
+
+def _serve_scaffold_question(learner_id: int, attempt_id: str,
+                             attempt: dict) -> dict:
+    """Serve ladder step (b): one guiding question."""
+    genre = DISCIPLINE_GENRES[attempt["discipline"]]
+    question = scaffold_question(
+        attempt["module"], attempt["q_index"], genre)
+    attempt["q_index"] += 1
+    attempt["step"] = "question"
+    store.log_event(learner_id, "Scaffold", "twin", "question",
+                    f"attempt_id={attempt_id} module={attempt['module']}")
+    return _scaffold_view(attempt_id, attempt, {"question": question})
+
+
+def _serve_scaffold_hint(learner_id: int, attempt_id: str, attempt: dict,
+                         attempt_text: str) -> dict:
+    """Serve ladder step (c): a hint aimed at the try's weak spot."""
+    topic = DISCIPLINE_TOPICS[attempt["discipline"]]
+    hint = targeted_hint(attempt["module"], attempt_text, topic)
+    attempt["step"] = "hint"
+    store.log_event(learner_id, "Scaffold", "twin", "hint",
+                    f"attempt_id={attempt_id} module={attempt['module']}")
+    return _scaffold_view(attempt_id, attempt, {"hint": hint})
+
+
+def _serve_assessed(learner_id: int, attempt_id: str, attempt: dict,
+                    judged: dict, text: str) -> dict:
+    """Serve the assessed next step: good moves on, weak gets help, repeated
+    weak sees the excerpt. Levels 4-5 still get only questions."""
+    if judged["status"] != "ok":
+        next_step = "retry"
+    elif judged["score"] == 2:
+        next_step = "rewrite"
+    elif attempt.get("weak", 0) >= 2:
+        next_step = "excerpt"
+    elif judged["next_step"] in ("question", "hint", "excerpt", "retry"):
+        next_step = judged["next_step"]
+    else:
+        next_step = "question"
+    if attempt["level"] >= 4 and next_step in ("hint", "excerpt"):
+        next_step = "question"
+    judged["next_step"] = next_step
+    if next_step == "retry":
+        return _scaffold_view(attempt_id, attempt, {"assessment": judged})
+    if next_step == "rewrite":
+        attempt["step"] = "rewrite"
+        return _scaffold_view(attempt_id, attempt, {
+            "assessment": judged,
+            "prompt": "Good work. Now write your final version."})
+    if next_step == "excerpt":
+        view = _serve_excerpt(learner_id, attempt_id, attempt, "excerpt")
+        view["assessment"] = judged
+        return view
+    if next_step == "hint":
+        view = _serve_scaffold_hint(
+            learner_id, attempt_id, attempt, text)
+        view["assessment"] = judged
+        return view
+    view = _serve_scaffold_question(learner_id, attempt_id, attempt)
+    view["assessment"] = judged
+    return view
 
 
 def _serve_steps(learner_id: int, attempt_id: str, attempt: dict,
@@ -3029,9 +3496,8 @@ def _serve_steps(learner_id: int, attempt_id: str, attempt: dict,
                     f"attempt_id={attempt_id} module={attempt['module']}")
     payload = {
         "steps": worked_steps(attempt["module"], attempt["discipline"]),
-        "rule": verified_excerpt(
-            module_rule_query(modules[attempt["module"]]), 2,
-            prefer_discipline=attempt["discipline"]),
+        "rule": _select_module_rule(modules[attempt["module"]],
+                                    attempt["discipline"]),
     }
     if verdict["pass"]:
         payload["model"] = model
@@ -3051,7 +3517,7 @@ def post_scaffold_start(data: ScaffoldStartIn):
         "learner_id": data.learner_id, "discipline": data.discipline,
         "module": data.module, "skill": content["skill"],
         "level": state["learner_level"], "step": "try", "q_index": 0,
-        "shows": 0,
+        "shows": 0, "weak": 0,
     }
     store.log_event(data.learner_id, "Scaffold", "twin", "start",
                     f"attempt_id={attempt_id} module={data.module}")
@@ -3063,15 +3529,21 @@ def post_scaffold_start(data: ScaffoldStartIn):
 def post_scaffold_help(data: ScaffoldHelpIn):
     """Move one rung up the ladder: question -> hint -> excerpt -> rewrite.
 
-    Levels 1-2 reach hints sooner; Levels 4-5 get only questions.
+    A real try is assessed first and the next step follows the assessment;
+    without a try (or Assessor) the fixed ladder runs: Levels 1-2 reach
+    hints sooner; Levels 4-5 get only questions.
     """
     attempt_id, attempt = _scaffold_attempt_or_raise(
         data.learner_id, data.attempt_id)
     if attempt["step"] in ("rewrite", "done"):
         return _scaffold_view(attempt_id, attempt)
+    text = (data.attempt_text or "").strip()
+    if text and attempt["step"] in ("try", "question", "hint"):
+        judged = _judge_attempt(data.learner_id, attempt, text)
+        if judged is not None:
+            return _serve_assessed(
+                data.learner_id, attempt_id, attempt, judged, text)
     level = attempt["level"]
-    genre = DISCIPLINE_GENRES[attempt["discipline"]]
-    topic = DISCIPLINE_TOPICS[attempt["discipline"]]
     if attempt["step"] == "excerpt":
         attempt["step"] = "rewrite"
         return _scaffold_view(attempt_id, attempt, {
@@ -3084,18 +3556,10 @@ def post_scaffold_help(data: ScaffoldHelpIn):
         return _serve_excerpt(data.learner_id, attempt_id, attempt, "excerpt")
     allowed = QUESTIONS_BEFORE_HINT.get(level)
     if level >= 4 or attempt["q_index"] < (allowed or 0):
-        question = scaffold_question(
-            attempt["module"], attempt["q_index"], genre)
-        attempt["q_index"] += 1
-        attempt["step"] = "question"
-        store.log_event(data.learner_id, "Scaffold", "twin", "question",
-                        f"attempt_id={attempt_id} module={attempt['module']}")
-        return _scaffold_view(attempt_id, attempt, {"question": question})
-    hint = targeted_hint(attempt["module"], data.attempt_text, topic)
-    attempt["step"] = "hint"
-    store.log_event(data.learner_id, "Scaffold", "twin", "hint",
-                    f"attempt_id={attempt_id} module={attempt['module']}")
-    return _scaffold_view(attempt_id, attempt, {"hint": hint})
+        return _serve_scaffold_question(
+            data.learner_id, attempt_id, attempt)
+    return _serve_scaffold_hint(
+        data.learner_id, attempt_id, attempt, data.attempt_text)
 
 
 @app.post("/scaffold/show")
@@ -3133,12 +3597,16 @@ def post_scaffold_rewrite(data: ScaffoldRewriteIn):
         raise HTTPException(status_code=400, detail="Rewrite text is empty")
     attempt_id, attempt = _scaffold_attempt_or_raise(
         data.learner_id, data.attempt_id)
+    judged = _judge_attempt(data.learner_id, attempt, data.text.strip())
     attempt["step"] = "done"
     words = len(data.text.split())
     store.log_event(data.learner_id, "Scaffold", "twin", "rewrite",
                     f"attempt_id={attempt_id} module={attempt['module']} words={words}")
-    return _scaffold_view(attempt_id, attempt, {
-        "message": "Saved. Read it once more against the pattern."})
+    extra = {"message": "Saved. Read it once more against the pattern."}
+    if judged is not None:
+        judged["next_step"] = "done"
+        extra["assessment"] = judged
+    return _scaffold_view(attempt_id, attempt, extra)
 
 
 @app.get("/practice")
@@ -3193,31 +3661,40 @@ def get_practice(learner_id: int):
 
 @app.post("/practice/answers")
 def post_answers(data: PracticeAnswersIn):
-    """Score submitted answers; bump the skill when accuracy passes 80%."""
+    """Score submitted answers; assess each and bump the skill per answer."""
     issued = ISSUED_SETS.get(data.set_id)
     if issued is None or issued["learner_id"] != data.learner_id:
         raise HTTPException(status_code=404, detail="Unknown or foreign set_id")
     skill = issued["skill"]
     items = issued.get("items") or practice_items_for(
         skill, issued["level"], issued.get("discipline"))
+    judged = _judge_practice_set(data.learner_id, skill, items, data.answers)
     details: list[dict] = []
-    correct = 0
+    correct = bump_total = 0
     for item in items:
         ok = check_answer(item, data.answers.get(item["id"], ""))
         correct += ok
+        got = judged[item["id"]]
+        bump_total += ASSESS_BUMPS[got["score"]]
         details.append({"id": item["id"], "correct": ok,
-                        "explanation": item["explanation"] if not ok else ""})
+                        "explanation": item["explanation"] if not ok else "",
+                        "assessment": {"feedback": got["feedback"],
+                                       "score": got["score"],
+                                       "next_step": got["next_step"],
+                                       "module": got["module"]}})
     total = len(items)
     accuracy = round(100 * correct / total) if total else 0
-    leveled_up = False
+    current = latest_scores(data.learner_id).get(skill, 0)
     new_score: float | None = None
-    if accuracy >= LEVEL_PASS_SCORE:  # did well -> raise the skill score
-        current = latest_scores(data.learner_id).get(skill, 0)
-        new_score = min(100, current + SKILL_BUMP)
+    if bump_total:
+        new_score = min(100, current + bump_total)
         store.save_skill_scores(data.learner_id, {skill: new_score})
-        leveled_up = level_for_score(new_score) > level_for_score(current)
+    leveled_up = new_score is not None \
+        and level_for_score(new_score) > level_for_score(current)
     store.log_event(data.learner_id, "Practise", "twin", "score_answers",
                     f"set_id={data.set_id} {correct}/{total} leveled_up={leveled_up}")
+    store.log_event(data.learner_id, "Practise", "twin", "assess",
+                    f"assessed {total} answers, +{bump_total} {skill}")
     return {"correct": correct, "total": total, "accuracy": accuracy,
             "skill": skill, "new_score": new_score, "leveled_up": leveled_up,
             "details": details}

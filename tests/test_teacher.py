@@ -276,7 +276,8 @@ def test_specific_beats_generic_set(tmp_db):
 
 
 # --- Published sets in Practice -----------------------------------------------
-def test_practice_serves_published_set(tmp_db):
+def test_practice_serves_published_set(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # no assessor
     sciences = _learner(tmp_db, "Sciences")  # no scores: Paragraphing L1
     medicine = _learner(tmp_db, "Medicine")
     store.save_teacher_set("Paragraphing", 1, "Sciences", _valid_items(), "r")

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import BasedOn from './BasedOn.jsx';
 
 // ScaffoldTask: the productive-struggle ladder for one module task.
 // (a) try with no help -> (b) guiding question -> (c) hint ->
@@ -22,18 +23,31 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
 
   const apply = (res) => {
     setView(res);
+    if (res.assessment) {
+      push({
+        kind: 'twin',
+        label: "Twin's feedback",
+        text: res.assessment.feedback,
+        cite: `Score ${res.assessment.score} of 2`,
+      });
+    }
     if (res.question) push({ kind: 'twin', label: 'Guiding question', text: res.question });
     if (res.hint) push({ kind: 'twin', label: 'Hint', text: res.hint });
     if (res.excerpt) {
-      const cite = [res.excerpt.source, res.excerpt.chapter].filter(Boolean).join(' · ');
-      push({ kind: 'twin', label: 'From the books', text: res.excerpt.text, cite });
-      if (res.excerpt.source) {
-        push({ kind: 'cite', text: `${cite} (${res.excerpt.license || 'license unknown'})` });
-      }
+      push({
+        kind: 'twin',
+        label: 'From the books',
+        text: res.excerpt.text,
+        books: res.excerpt.book ? [res.excerpt.book] : [],
+      });
     }
     if (res.rule && res.rule.source) {
-      const cite = [res.rule.source, res.rule.chapter].filter(Boolean).join(' · ');
-      push({ kind: 'twin', label: 'The rule from the books', text: res.rule.text, cite });
+      push({
+        kind: 'twin',
+        label: 'The rule from the books',
+        text: res.rule.text,
+        books: res.rule.book ? [res.rule.book] : [],
+      });
     }
     if (res.steps) push({ kind: 'steps', label: 'Follow these steps', steps: res.steps });
     if (res.model) push({ kind: 'model', label: 'Study this model — a different point', text: res.model });
@@ -93,9 +107,7 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
       {feed.map((e, i) => (
         e.kind === 'me'
           ? <div className="card" key={i}><p>{e.text}</p></div>
-          : e.kind === 'cite'
-            ? <p className="muted" key={i}><em>{e.text}</em></p>
-            : e.kind === 'steps'
+          : e.kind === 'steps'
               ? (
                 <div className="card" key={i}>
                   <div className="card-title">{e.label}</div>
@@ -116,6 +128,7 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
                 <div className="card-title">{e.label}</div>
                 <p>{e.text}</p>
                 {e.cite && <p className="muted"><em>{e.cite}</em></p>}
+                {e.books && e.books.length > 0 && <BasedOn books={e.books} />}
               </div>
             )
       ))}

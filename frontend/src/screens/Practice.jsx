@@ -4,7 +4,8 @@ import HowItDecided from '../components/HowItDecided.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 
 // Practice: one item at a time, tap to answer, score at the end.
-export default function Practice() {
+// Each answer carries the twin's assessment; repeated wrongs offer Learn.
+export default function Practice({ go }) {
   const [set, setSet] = useState(null);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -66,8 +67,15 @@ export default function Practice() {
         {result.details.filter((d) => !d.correct).map((d) => (
           <div className="card warn" key={d.id}>
             <p>{d.explanation}</p>
+            {d.assessment && <p className="muted">{d.assessment.feedback}</p>}
           </div>
         ))}
+        {result.details.some((d) => d.assessment && d.assessment.next_step === 'study') && (
+          <div className="card">
+            <p>Some answers need work. Study the idea, then try again.</p>
+            <button className="btn secondary" onClick={() => go('learn')}>Study this in Learn</button>
+          </div>
+        )}
         <button className="btn" onClick={load}>Practise again</button>
         <HowItDecided refreshKey={result} />
         <button className="twin-fab" onClick={() => setTwinOpen(true)}>Ask my Twin</button>

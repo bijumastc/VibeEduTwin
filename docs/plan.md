@@ -67,3 +67,12 @@ structurally checked at serve time and failures are excluded.
 - `grounded-in-excerpts`: every drafted item must quote an excerpt sentence
   word-for-word in its prompt or options. Ungrounded drafts are dropped and
   template-built items fill the count, so the set stays excerpt-only.
+
+### Attempt assessments (`assessor`)
+
+- `valid-score`: the score is 0, 1 or 2.
+- `feedback-shape`: feedback runs 2-4 short sentences.
+- `quotes-learner`: on-task feedback quotes the learner's own words (skipped
+  for off-task, nonsense and copied tries). On failure the fixed ladder runs.
+  Practice answers use the same checklist with the chosen option as the
+  learner's words; rejected drafts fall back to templates.

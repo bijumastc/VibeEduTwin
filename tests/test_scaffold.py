@@ -111,6 +111,7 @@ def test_levels4_and_5_get_only_questions(tmp_db, score):
 
 def test_ladder_reaches_excerpt_then_rewrite(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: _hit())
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # no assessor
     learner_id = _learner(tmp_db, {"Paragraphing": 50})
     attempt = _start(learner_id)["attempt_id"]
     _help(learner_id, attempt)
@@ -213,7 +214,8 @@ def test_independence_new_and_steady(tmp_db):
     assert exc.value.status_code == 404
 
 
-def test_steps_serve_sequential_worked_answer(tmp_db):
+def test_steps_serve_sequential_worked_answer(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # no assessor
     learner_id = _learner(tmp_db)
     attempt = _start(learner_id)["attempt_id"]
     served = _steps(learner_id, attempt)
@@ -357,6 +359,202 @@ def test_steps_count_as_help_in_independence(tmp_db):
     assert res["attempts"] == 2
     assert (res["recent_helps"], res["previous_helps"]) == (0, 1)
     assert res["trend"] == "improving"
+
+
+def _assess_reply(status="ok", score=1, next_step="question", **over):
+    import json
+    base = {"status": status,
+            "strength": "You name the topic.",
+            "problem": "Your line has no clear point yet: \"plants need sun\".",
+            "quote": "plants need sun",
+            "next_action": "Add the one point your paragraph will prove.",
+            "score": score, "next_step": next_step}
+    base.update(over)
+    return json.dumps(base)
+
+
+def _keyed_assessor(monkeypatch, reply):
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", lambda messages: reply)
+
+
+def test_assessed_weak_try_serves_question_and_scores(tmp_db, monkeypatch):
+    _keyed_assessor(monkeypatch, _assess_reply())
+    learner_id = _learner(tmp_db, {"Paragraphing": 25})
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Plants need sun to grow tall.")
+    assert helped["step"] == "question"
+    assert helped["question"].strip()
+    got = helped["assessment"]
+    assert got["score"] == 1 and got["skill"] == "Paragraphing"
+    assert got["skill_score"] == 30 and got["skill_level"] == 2
+    assert got["feedback"] == ("You name the topic. Your line has no clear "
+                               "point yet: \"plants need sun\". Add the one "
+                               "point your paragraph will prove.")
+    assert main.verify_twin_reply(
+        got["feedback"], "Plants need sun to grow tall.") == []
+    tools = [row["tool"] for row in store.get_scaffold_events(learner_id)]
+    assert "assess" in tools
+    assert _help(learner_id, attempt)["step"] == "hint"  # ladder continues
+
+
+def test_good_answer_moves_to_rewrite(tmp_db, monkeypatch):
+    _keyed_assessor(monkeypatch, _assess_reply(
+        score=2, next_step="hint", problem="Your point is clear in \"rises fast\".",
+        quote="rises fast", next_action="Keep this line as your opener."))
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Evaporation rises fast on hot days.")
+    assert helped["step"] == "rewrite"
+    assert "final version" in helped["prompt"]
+    assert helped["assessment"]["score"] == 2
+    assert helped["assessment"]["skill_score"] == 10
+
+
+def test_repeated_weak_reaches_excerpt(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: _hit())
+    _keyed_assessor(monkeypatch, _assess_reply())
+    learner_id = _learner(tmp_db, {"Paragraphing": 50})
+    attempt = _start(learner_id)["attempt_id"]
+    first = _help(learner_id, attempt, "Plants need sun to grow tall.")
+    assert first["step"] == "question"
+    second = _help(learner_id, attempt, "Plants need sun and rain daily.")
+    assert second["step"] == "excerpt"
+    assert second["excerpt"]["source"] == "guide.pdf"
+    assert second["assessment"]["skill_level"] == 4
+
+
+def test_copied_attempt_stays_and_scores_zero(tmp_db, monkeypatch):
+    def boom(messages):
+        raise AssertionError("copied attempts must not call Spark")
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", boom)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    model = main.worked_model("topic-sentences", "Sciences")
+    helped = _help(learner_id, attempt, model)
+    assert helped["step"] == "try"
+    got = helped["assessment"]
+    assert got["status"] == "copied" and got["score"] == 0
+    assert "own words" in got["feedback"]
+    assert store.get_skill_scores(learner_id) == []
+
+
+def test_nonsense_short_attempt(tmp_db, monkeypatch):
+    def boom(messages):
+        raise AssertionError("nonsense attempts must not call Spark")
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", boom)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "yes ok")
+    assert helped["step"] == "try"
+    assert helped["assessment"]["status"] == "nonsense"
+    assert helped["assessment"]["score"] == 0
+
+
+def test_off_task_attempt_asks_for_real_try(tmp_db, monkeypatch):
+    _keyed_assessor(monkeypatch, _assess_reply(
+        status="off_task", score=0, next_step="retry", strength="",
+        problem="", quote="",
+        next_action="Write one line about evaporation."))
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Cricket is fun to watch daily.")
+    assert helped["step"] == "try"
+    assert "evaporation" in helped["assessment"]["feedback"]
+
+
+def test_no_key_keeps_fixed_ladder(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Plants need sun to grow tall daily.")
+    assert helped["step"] == "hint"
+    assert "assessment" not in helped
+
+
+def test_level5_assessed_hint_becomes_question(tmp_db, monkeypatch):
+    _keyed_assessor(monkeypatch, _assess_reply(next_step="hint"))
+    learner_id = _learner(tmp_db, {"Paragraphing": 90})
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Plants need sun to grow tall.")
+    assert helped["step"] == "question"
+    assert "hint" not in helped
+    assert helped["assessment"]["next_step"] == "question"
+
+
+def test_assessor_verifier():
+    good = main.verify("assessor", {
+        "status": "ok",
+        "feedback": "You name the topic. Sharpen this line: \"plants need "
+                    "sun\". Add your point.",
+        "attempt": "Plants need sun daily.", "quote": "plants need sun",
+        "score": 1})
+    assert good == {"pass": True, "failed": [], "fix": ""}
+    bad_score = main.verify("assessor", {
+        "status": "ok", "feedback": "Plants start. Second.",
+        "attempt": "Plants grow.", "quote": "plants", "score": 5})
+    assert bad_score["failed"] == ["valid-score"]
+    one_line = main.verify("assessor", {
+        "status": "ok", "feedback": "Plants only.", "attempt": "Plants grow.",
+        "quote": "plants", "score": 1})
+    assert one_line["failed"] == ["feedback-shape"]
+    no_quote = main.verify("assessor", {
+        "status": "ok", "feedback": "First. Second.", "attempt": "Plants grow.",
+        "quote": "zebras", "score": 1})
+    assert no_quote["failed"] == ["quotes-learner"]
+    off_task = main.verify("assessor", {
+        "status": "off_task", "feedback": "Not the task. Try it freshly.",
+        "attempt": "Cricket rules.", "quote": "", "score": 0})
+    assert off_task["pass"] is True
+
+
+def test_rewrite_is_assessed(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: _hit())
+    _keyed_assessor(monkeypatch, _assess_reply(
+        score=2, next_step="rewrite", problem="Your point is clear in \"rises fast\".",
+        quote="rises fast", next_action="Keep this line as your opener."))
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    _help(learner_id, attempt)
+    _help(learner_id, attempt)
+    _help(learner_id, attempt)
+    done = main.post_scaffold_rewrite(main.ScaffoldRewriteIn(
+        learner_id=learner_id, attempt_id=attempt,
+        text="Evaporation rises fast on hot days."))
+    assert done["step"] == "done" and "Saved" in done["message"]
+    assert done["assessment"]["score"] == 2
+    assert done["assessment"]["skill_score"] == 10
+
+
+def test_steps_rule_is_about_the_module(tmp_db, monkeypatch):
+    good = ("A topic sentence names the topic. It states the main point "
+            "first. Details follow and support it.")
+    bad = "Cite every source you borrow with care today. Check dates twice."
+    metas = [{"source": "off-topic.pdf", "chapter": "Ch 9", "license": "CC BY"},
+             {"source": "Writing for Success (McLean).pdf", "chapter": "Ch 2",
+              "license": "CC BY-NC-SA 3.0"}]
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([bad, good], metas))
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    rule = main.post_scaffold_steps(main.ScaffoldStepsIn(
+        learner_id=learner_id, attempt_id=attempt))["rule"]
+    assert "topic sentence" in rule["text"]
+    assert rule["book"]["title"] == "Writing for Success"
+    assert ".pdf" not in rule["book"]["title"]
+    assert rule["book"]["license"]
+
+
+def test_assessment_and_book_ui_strings():
+    task = (ROOT / "frontend" / "src" / "components" / "ScaffoldTask.jsx").read_text(
+        encoding="utf-8")
+    assert "assessment" in task and "Twin's feedback" in task
+    assert "BasedOn" in task
+    assert "license unknown" not in task
 
 
 def test_steps_ui_strings():

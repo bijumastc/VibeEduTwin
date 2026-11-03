@@ -106,7 +106,8 @@ def test_diagnose_includes_learn_card(tmp_db, monkeypatch):
 
 
 # --- Discipline-aware practice ---------------------------------------------
-def test_practice_uses_learner_discipline(tmp_db):
+def test_practice_uses_learner_discipline(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # no assessor
     learner_id = _learner(tmp_db, "Arts & Humanities")
     body = main.get_practice(learner_id)
     assert body["discipline"] == "Arts & Humanities"
