@@ -61,3 +61,9 @@ structurally checked at serve time and failures are excluded.
 - `not-task-topic`: the model must not share the task's topic word, so it
   cannot be copied as the learner's answer. On failure the steps are
   served without the model.
+
+### Spark drafts (`excerpt_grounding`)
+
+- `grounded-in-excerpts`: every drafted item must quote an excerpt sentence
+  word-for-word in its prompt or options. Ungrounded drafts are dropped and
+  template-built items fill the count, so the set stays excerpt-only.

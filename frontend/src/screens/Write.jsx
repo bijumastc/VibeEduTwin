@@ -4,6 +4,7 @@ import CompactLesson from '../components/CompactLesson.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
 import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
+import VoiceButton from '../components/VoiceButton.jsx';
 
 // Write: big text box, submit, then 7-skill diagnosis + twin note + Learn card.
 export default function Write({ go }) {
@@ -47,7 +48,11 @@ export default function Write({ go }) {
           />
           <button className="btn" onClick={submit} disabled={busy || !text.trim()}>
             {busy ? 'Checking…' : 'Submit'}
-          </button>
+          </button>{' '}
+          <VoiceButton
+            disabled={busy}
+            onTranscript={(spoken) => setText((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+          />
         </>
       )}
 

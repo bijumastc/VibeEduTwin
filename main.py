@@ -18,6 +18,7 @@ Endpoints:
   POST /scaffold/show         "Show me now": jump to the book excerpt
   POST /scaffold/steps        "Just show me the steps": the worked answer
   POST /scaffold/rewrite      accept the learner's rewrite
+  WS   /ws/transcribe         stream mic audio, get the transcript
   POST /teacher/practice-sets  generate a set from library excerpts + verify it
   POST /teacher/publish        publish a set into learners' Practice
   GET  /events                 latest audit rows for the How-it-decided panel
@@ -31,12 +32,15 @@ Run:
   .venv\\Scripts\\python.exe main.py                          (direct)
 """
 
+import asyncio
 import json
+import os
 import re
+import urllib.request
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -2309,6 +2313,8 @@ VERIFY_FIXES = {
                             "explains, shows, should, because, or why.",
     "not-task-topic": "Put the model on a different topic: it must not share "
                       "the task's topic word.",
+    "grounded-in-excerpts": "Quote example sentences word-for-word from the "
+                            "shown excerpts.",
 }
 
 # Structural subset for the curated bank (exempt from no-invented-examples).
@@ -2408,6 +2414,20 @@ WORKED_CONTROL_MARKERS = ("explain", "explains", "show", "shows", "prove",
                           "proves", "should", "because", "why")
 
 
+def _verify_excerpt_grounding_rules(payload: dict) -> list[str]:
+    """One failure per item quoting no excerpt sentence verbatim."""
+    payload = payload or {}
+    sentences = []
+    for excerpt in payload.get("excerpts") or []:
+        sentences.extend(clean_sentences(excerpt))
+    failed = []
+    for i, item in enumerate(payload.get("items") or []):
+        if not _item_grounded(item if isinstance(item, dict) else {},
+                              sentences):
+            failed.append(f"item {i + 1}: grounded-in-excerpts")
+    return failed
+
+
 def _verify_worked_model_rules(payload: dict) -> list[str]:
     """A worked model must argue its own topic, off the task topic."""
     payload = payload or {}
@@ -2428,7 +2448,7 @@ def verify(kind: str, payload, context: dict | None = None,
     """Run the docs/plan.md checklist. Replies only in JSON.
 
     kind: "twin_reply" | "practice_item" | "practice_set" | "lesson_idea"
-      | "worked_model".
+      | "worked_model" | "excerpt_grounding".
     context: {"message": learner text} for twin replies.
     rules: optional subset of rule ids (used for the curated bank).
     """
@@ -2443,6 +2463,8 @@ def verify(kind: str, payload, context: dict | None = None,
         failed = _verify_lesson_idea_rules(payload)
     elif kind == "worked_model":
         failed = _verify_worked_model_rules(payload)
+    elif kind == "excerpt_grounding":
+        failed = _verify_excerpt_grounding_rules(payload)
     elif kind == "practice_set":
         failed = []
         if not payload:
@@ -2603,31 +2625,147 @@ def _teacher_mcq_item(num: int, correct: str, distractors: list[str],
             "source": source, "chapter": chapter, "license": license}
 
 
-def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
-    """Build items ONLY from ChromaDB excerpts; [] when nothing usable exists.
+# --- Muse Spark item drafting (excerpt-grounded) ----------------------------------
+# Teacher sets are drafted by Muse Spark over retrieved ChromaDB excerpts, then
+# gated: every kept item must pass the practice_item checklist AND quote an
+# excerpt sentence word-for-word. Provenance (source/chapter/license) is always
+# resolved server-side from the excerpt's metadata, never from model output.
+# Anything ungrounded is dropped and template-built items fill the count, so
+# the set stays excerpt-only even when Spark invents or the API is down.
+SPARK_CHAT_URL = "https://api.meta.ai/v1/chat/completions"
+SPARK_MODEL = "muse-spark-1.3"
+SPARK_TIMEOUT = 45
 
-    Order items reuse an excerpt's own sentence order; mcq items pair one
-    excerpt sentence with sentences from other topics' excerpts. The optional
-    note steers retrieval. Option order rotates deterministically by position.
-    """
-    parsed = parse_teacher_request(request_text)
-    skill, count = parsed["skill"], parsed["count"]
-    extra = f" {(note or '').strip()}" if (note or "").strip() else ""
-    docs, metas = _query_guides(f"{skill} writing{extra}", n_results=count + 3)
-    pool = [(d, m or {}) for d, m in zip(docs, metas) if (d or "").strip()]
-    if not pool:
-        return []
-    if parsed["discipline"]:
-        pool = sorted(pool, key=lambda dm: _book_score(
-            (dm[1] or {}).get("source"), parsed["discipline"]), reverse=True)
-    others = [s for s in SKILLS if s != skill][:2]
-    dpool: list[str] = []
-    for other in others:
-        other_docs, _ = _query_guides(f"{other} writing{extra}", n_results=2)
-        for doc in other_docs:
-            dpool.extend(_excerpt_sentences(doc))
+
+class SparkError(Exception):
+    """Muse Spark call failed; the caller falls back to templates."""
+
+
+def _spark_post(url: str, body: dict, key: str, timeout: int) -> dict:
+    """POST JSON to the Model API; return the decoded response (mock point)."""
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8"))
+
+
+def _spark_chat(messages: list[dict]) -> str:
+    """One JSON-mode chat completion; assistant text, or raise SparkError."""
+    key = _model_api_key()
+    if not key:
+        raise SparkError("no API key")
+    try:
+        data = _spark_post(SPARK_CHAT_URL, {
+            "model": SPARK_MODEL, "messages": messages,
+            "response_format": {"type": "json_object"}}, key, SPARK_TIMEOUT)
+        return data["choices"][0]["message"]["content"]
+    except SparkError:
+        raise
+    except Exception as exc:
+        raise SparkError(str(exc)) from exc
+
+
+SPARK_TEACHER_SYSTEM = (
+    "You write English-writing practice items for first-year Indian "
+    "undergraduates. Use ONLY the numbered excerpts below: every example "
+    "sentence in every item must be copied word-for-word from the excerpts. "
+    "Never invent examples. Reply with a JSON array only, no other text. "
+    "Each item is an object with type (mcq or order), prompt, options, "
+    "answer, and answerExcerpt (the excerpt number holding the answer, like "
+    "E2). For mcq: options are sentences labelled A) B) C), answer is the "
+    "correct letter. For order: the prompt embeds the sentences as "
+    "1) '...' 2) '...', options are orderings like 1,2 and answer is the "
+    "correct ordering.")
+
+
+def _shown_excerpts(pool: list, max_docs: int = 8, max_chars: int = 600) -> list:
+    """(text, meta) pairs Spark may quote, trimmed at sentence ends."""
+    shown = []
+    for doc, meta in pool[:max_docs]:
+        text = ""
+        for sent in clean_sentences(doc):
+            if text and len(text) + 1 + len(sent) > max_chars:
+                break
+            text = f"{text} {sent}".strip()
+        if text:
+            shown.append((text, meta or {}))
+    return shown
+
+
+def _spark_teacher_messages(shown: list, request_text: str,
+                            parsed: dict, note: str) -> list[dict]:
+    """Prompt: the teacher ask plus the quotable excerpts."""
+    lines = [f"E{i + 1}: {text}" for i, (text, _) in enumerate(shown)]
+    user = (f"Teacher request: {request_text} Skill: {parsed['skill']}. "
+            f"Level: {parsed['level']}. Write exactly {parsed['count']} items, "
+            f"alternating order, mcq, order, mcq and so on.")
+    if (note or "").strip():
+        user += f" Teacher note: {(note or '').strip()}."
+    user += " Excerpts (quote these word-for-word):\n" + "\n".join(lines)
+    return [{"role": "system", "content": SPARK_TEACHER_SYSTEM},
+            {"role": "user", "content": user}]
+
+
+def _resolve_spark_item(draft: dict, shown: list, skill: str) -> dict | None:
+    """A draft with server-side provenance, or None when malformed."""
+    if not isinstance(draft, dict) or draft.get("type") not in ("mcq", "order"):
+        return None
+    prompt, options, answer = (draft.get("prompt"), draft.get("options"),
+                               draft.get("answer"))
+    if not prompt or not isinstance(options, list) or len(options) < 2:
+        return None
+    if not answer or not all(isinstance(o, str) and o.strip() for o in options):
+        return None
+    ref = re.fullmatch(r"E(\d+)", str(draft.get("answerExcerpt") or "").strip())
+    meta = (shown[int(ref.group(1)) - 1][1]
+            if ref and 0 < int(ref.group(1)) <= len(shown)
+            else shown[0][1])
+    source, chapter, license = _teacher_source(meta)
+    return {"id": "sx", "type": draft["type"], "prompt": str(prompt).strip(),
+            "options": [o.strip() for o in options],
+            "answer": str(answer).strip(),
+            "explanation": _teacher_explanation(skill, meta),
+            "source": source, "chapter": chapter, "license": license}
+
+
+def _normalized(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def _item_grounded(item: dict, sentences: list[str]) -> bool:
+    """An excerpt sentence quoted verbatim in the prompt or options."""
+    blob = _normalized(item.get("prompt", "") + " " +
+                       " ".join(item.get("options") or []))
+    return any(s and s in blob for s in (_normalized(s) for s in sentences))
+
+
+def _spark_draft_items(shown: list, request_text: str, parsed: dict,
+                       note: str) -> list[dict]:
+    """Spark's items that pass structure + grounding (raises SparkError)."""
+    raw = _spark_chat(_spark_teacher_messages(shown, request_text, parsed, note))
+    try:
+        drafts = json.loads(raw)
+    except ValueError as exc:
+        raise SparkError("bad JSON") from exc
+    if not isinstance(drafts, list):
+        raise SparkError("not a list")
+    sentences = [s for text, _ in shown for s in clean_sentences(text)]
+    kept = []
+    for draft in drafts[:parsed["count"]]:
+        item = _resolve_spark_item(draft, shown, parsed["skill"])
+        if (item is not None and verify("practice_item", item)["pass"]
+                and _item_grounded(item, sentences)):
+            kept.append(item)
+    return kept
+
+
+def _template_items(pool: list, dpool: list[str], skill: str, count: int,
+                    start: int = 0, seen: set[str] | None = None) -> list[dict]:
+    """Deterministic excerpt assembly; start offsets ids and type alternation."""
     items: list[dict] = []
-    seen_prompts: set[str] = set()
+    seen_prompts = set(seen or ())
     use_count = [0] * len(pool)
     idx = guard = 0
     while len(items) < count and guard < count * 4:
@@ -2641,9 +2779,10 @@ def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
         use_count[j] += 1
         window = (sentences[off:] + sentences[:off])[:4]
         meta = pool[j][1]
+        num = start + len(items)
         item = None
-        if len(items) % 2 == 0:
-            item = _teacher_order_item(len(items), window, meta, skill)
+        if num % 2 == 0:
+            item = _teacher_order_item(num, window, meta, skill)
         else:
             distractors = []
             for s in dpool:
@@ -2652,9 +2791,9 @@ def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
                 if len(distractors) == 3:
                     break
             if len(distractors) >= 2:
-                item = _teacher_mcq_item(len(items), window[0], distractors, meta, skill)
+                item = _teacher_mcq_item(num, window[0], distractors, meta, skill)
             else:
-                item = _teacher_order_item(len(items), window, meta, skill)
+                item = _teacher_order_item(num, window, meta, skill)
         if item is None:
             continue
         # Mcq prompts repeat by design; tell them apart by the correct sentence.
@@ -2663,6 +2802,66 @@ def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
             seen_prompts.add(key)
             items.append(item)
     return items
+
+
+def _spark_item_key(item: dict) -> str:
+    """Dedupe key matching the template rule (correct sentence for mcq)."""
+    if item["type"] == "order":
+        return item["prompt"]
+    for option in item["options"]:
+        if option.startswith(item["answer"] + ")"):
+            return item["prompt"] + "|" + option
+    return item["prompt"] + "|" + item["answer"]
+
+
+def _generate_practice_set(request_text: str, note: str = "") -> tuple[list[dict], str]:
+    """(items, engine): Spark drafts when keyed, templates fill any gap.
+
+    Engine is spark | mixed | template. Either way every served item is
+    excerpt-only: Spark drafts pass the grounding gate, templates assemble
+    excerpts directly.
+    """
+    parsed = parse_teacher_request(request_text)
+    skill, count = parsed["skill"], parsed["count"]
+    extra = f" {(note or '').strip()}" if (note or "").strip() else ""
+    docs, metas = _query_guides(f"{skill} writing{extra}", n_results=count + 3)
+    pool = [(d, m or {}) for d, m in zip(docs, metas) if (d or "").strip()]
+    if not pool:
+        return [], "template"
+    if parsed["discipline"]:
+        pool = sorted(pool, key=lambda dm: _book_score(
+            (dm[1] or {}).get("source"), parsed["discipline"]), reverse=True)
+    others = [s for s in SKILLS if s != skill][:2]
+    dpool: list[str] = []
+    for other in others:
+        other_docs, _ = _query_guides(f"{other} writing{extra}", n_results=2)
+        for doc in other_docs:
+            dpool.extend(_excerpt_sentences(doc))
+    try:
+        kept = _spark_draft_items(_shown_excerpts(pool), request_text,
+                                  parsed, note)
+    except SparkError:
+        kept = []
+    need = count - len(kept)
+    backfill = _template_items(pool, dpool, skill, need, start=len(kept),
+                               seen={_spark_item_key(it) for it in kept}) if need > 0 else []
+    final = kept + backfill
+    for i, item in enumerate(final):
+        item["id"] = f"t{i + 1}"
+    engine = "spark" if kept and not backfill else ("mixed" if kept else "template")
+    return final, engine
+
+
+def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
+    """Build items ONLY from ChromaDB excerpts; [] when nothing usable exists.
+
+    Spark drafts the items when an API key is set; every draft must quote an
+    excerpt sentence word-for-word or it is dropped. Template-built items fill
+    any gap, so the set stays excerpt-only with or without Spark. The optional
+    note steers retrieval (and Spark). Option order rotates deterministically
+    by position.
+    """
+    return _generate_practice_set(request_text, note)[0]
 
 
 # --- Endpoints --------------------------------------------------------------------------
@@ -2967,6 +3166,16 @@ def get_practice(learner_id: int):
         items = [it for it in practice_items_for(skill, level, discipline)
                  if verify("practice_item", it,
                            rules=PRACTICE_STRUCTURAL_RULES)["pass"]]
+    if published:
+        # Teacher actions have no learner of their own, so the set's history
+        # is logged here, where it lands in the learner's How-it-decided
+        # panel: generated from excerpts, verifier passed, published.
+        sources = {it.get("source") for it in items if it.get("source")}
+        excerpt_word = "excerpt" if len(sources) == 1 else "excerpts"
+        store.log_event(
+            learner_id, "Practise", "teacher", "teacher-set",
+            f"Teacher set on {skill} Level {level}: {len(items)} items built "
+            f"from {len(sources)} {excerpt_word}, verifier passed, published.")
     set_id = uuid.uuid4().hex[:8]
     ISSUED_SETS[set_id] = {"learner_id": learner_id, "skill": skill,
                            "level": level, "discipline": discipline,
@@ -3100,11 +3309,256 @@ def get_independence(learner_id: int):
     return {"learner_id": learner_id, **independence(learner_id)}
 
 
+# --- Voice input (Muse Voice Transcribe) --------------------------------------
+# Push-to-talk dictation: browser mic -> this backend -> Meta's realtime API
+# -> transcript back into the text box. Meta message format, per
+# dev.meta.ai/docs: the handshake is the first JSON text frame (the credential
+# travels inside it, never in an HTTP header), audio is raw PCM16 mono binary
+# frames, {"type": "endStream"} ends input, and server events look like
+# {"type": "transcript", "transcript": ..., "final": ...}.
+MUSE_ASR_URL = "wss://api.meta.ai/v1/asr/realtime"
+MUSE_ASR_MODEL = "muse-voice-transcribe-1.0"
+TRANSCRIBE_CREDIT = "Transcribed by Muse Voice Transcribe"
+
+# Meta's documented languageBias names for our learners. Malayalam is not on
+# Meta's documented list: the hint is omitted (auto-detect) and Meta is still
+# tried first; on failure the browser falls back to its own recognizer.
+META_LANGUAGE_HINTS = {"Hindi": "Hindi", "Tamil": "Tamil",
+                       "Telugu": "Telugu", "Kannada": "Kannada",
+                       "Bengali": "Bengali", "Marathi": "Marathi",
+                       "English": "English"}
+
+# BCP-47 tags for the browser fallback recognizer.
+BROWSER_SPEECH_LANGS = {"Hindi": "hi-IN", "Tamil": "ta-IN",
+                        "Telugu": "te-IN", "Kannada": "kn-IN",
+                        "Bengali": "bn-IN", "Marathi": "mr-IN",
+                        "Malayalam": "ml-IN", "English": "en-IN"}
+
+
+def meta_language_hint(language: str | None) -> list[str]:
+    """languageBias for the Meta handshake ([] = let Meta detect)."""
+    hint = META_LANGUAGE_HINTS.get(language or "")
+    return [hint] if hint else []
+
+
+def browser_speech_lang(language: str | None) -> str:
+    """BCP-47 tag for the browser fallback recognizer."""
+    return BROWSER_SPEECH_LANGS.get(language or "", "en-IN")
+
+
+def _env_key(*names: str) -> str | None:
+    """First matching key from the environment, else backend .env."""
+    for name in names:
+        key = os.environ.get(name, "").strip()
+        if key:
+            return key
+    env_path = Path(__file__).resolve().parent / ".env"
+    try:
+        env_text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in env_text.splitlines():
+        name, sep, value = line.partition("=")
+        if sep and name.strip() in names:
+            found = value.strip().strip('"').strip("'")
+            if found:
+                return found
+    return None
+
+
+def _meta_api_key() -> str | None:
+    """Model API key from the environment or backend .env (never the browser)."""
+    return _env_key("META_API_KEY")
+
+
+def _model_api_key() -> str | None:
+    """Docs-canonical MODEL_API_KEY, falling back to this repo's META_API_KEY."""
+    return _env_key("MODEL_API_KEY", "META_API_KEY")
+
+
+def muse_handshake(api_key: str, hint: list[str]) -> dict:
+    """First JSON frame of a Meta realtime session (documented fields)."""
+    handshake = {
+        "authorization": {"accessToken": f"Bearer {api_key}"},
+        "audioEncoding": "PCM_16KHZ",
+        "model": MUSE_ASR_MODEL,
+        "mode": "PUSH_TO_TALK",
+    }
+    if hint:
+        handshake["languageBias"] = list(hint)
+    return handshake
+
+
+def parse_muse_event(event: dict) -> dict:
+    """One Meta server frame -> transcript / error / ignore (docs: dispatch
+    on type, ignore unknown values)."""
+    if not isinstance(event, dict):
+        return {"kind": "ignore"}
+    if event.get("type") == "transcript":
+        return {"kind": "transcript", "text": event.get("transcript", ""),
+                "final": bool(event.get("final"))}
+    if event.get("type") == "error":
+        return {"kind": "error", "message": event.get("message", "")}
+    return {"kind": "ignore"}
+
+
+async def _transcribe_relay(browser: WebSocket, meta) -> tuple[str | None, bool]:
+    """Pump audio browser -> Meta and transcripts Meta -> browser.
+
+    Returns (final transcript or None, browser still connected).
+    """
+    final: str | None = None
+    alive = True
+
+    async def upstream() -> None:
+        nonlocal alive
+        try:
+            while True:
+                message = await browser.receive()
+                if message["type"] == "websocket.disconnect":
+                    alive = False
+                    break
+                if message.get("bytes") is not None:
+                    try:
+                        await meta.send(message["bytes"])
+                    except Exception:
+                        break  # Meta went away: nothing more to stream
+                else:
+                    try:
+                        frame = json.loads(message.get("text") or "")
+                    except ValueError:
+                        continue
+                    if frame.get("type") == "stop":
+                        try:
+                            await meta.send(json.dumps({"type": "endStream"}))
+                        except Exception:
+                            pass
+                        break
+        except (RuntimeError, Exception):
+            alive = False
+
+    async def downstream() -> None:
+        nonlocal final
+        try:
+            async for message in meta:
+                if isinstance(message, bytes):
+                    continue
+                try:
+                    event = json.loads(message)
+                except ValueError:
+                    continue
+                parsed = parse_muse_event(event)
+                if parsed["kind"] == "transcript":
+                    if parsed["final"]:
+                        final = parsed["text"]
+                        break
+                    try:
+                        await browser.send_json({"type": "partial",
+                                                 "text": parsed["text"]})
+                    except Exception:
+                        break
+                elif parsed["kind"] == "error":
+                    break
+        except Exception:
+            pass
+
+    up = asyncio.create_task(upstream())
+    down = asyncio.create_task(downstream())
+    await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
+    if up.done() and alive and not down.done():
+        # Stop was sent: keep reading Meta for the final (bounded).
+        try:
+            await asyncio.wait_for(down, timeout=30)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            down.cancel()
+    else:
+        # Browser gone, or Meta finished first: stop the other side.
+        for task in (up, down):
+            if not task.done():
+                task.cancel()
+    for task in (up, down):
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    return final, alive
+
+
+@app.websocket("/ws/transcribe")
+async def ws_transcribe(browser: WebSocket, learner_id: int = 0):
+    """Relay browser mic audio to Meta and stream the transcript back.
+
+    Browser protocol: connect with ?learner_id=N; first receive ready
+    {"type": "ready", "metaHint": [...], "browserLang": "ml-IN"}; send binary
+    PCM16 mono 16 kHz frames while holding Speak; send {"type": "stop"} on
+    release. The server answers {"type": "partial"/"final", "text"} or
+    {"type": "meta_error"} (fall back to the browser recognizer).
+    """
+    await browser.accept()
+    learner = store.get_learner(learner_id)
+    if learner is None:
+        await browser.send_json({"type": "error", "reason": "unknown-learner"})
+        await browser.close()
+        return
+    language = learner.get("language_preference") or ""
+    hint = meta_language_hint(language)
+    await browser.send_json({"type": "ready", "metaHint": hint,
+                             "browserLang": browser_speech_lang(language)})
+    api_key = _meta_api_key()
+    if not api_key:
+        await browser.send_json({"type": "meta_error", "reason": "no-key"})
+        await browser.close()
+        return
+    try:
+        import websockets
+    except ImportError:  # pragma: no cover - dependency is installed
+        await browser.send_json({"type": "meta_error", "reason": "no-client"})
+        await browser.close()
+        return
+    session_id = f"vibe-{uuid.uuid4().hex[:12]}"
+    try:
+        meta = await websockets.connect(
+            f"{MUSE_ASR_URL}?sessionId={session_id}", open_timeout=30)
+    except Exception:
+        await browser.send_json({"type": "meta_error", "reason": "connect-failed"})
+        await browser.close()
+        return
+    try:
+        await meta.send(json.dumps(muse_handshake(api_key, hint)))
+        try:
+            ack = json.loads(await meta.recv())
+        except Exception:
+            ack = {}
+        if "sessionId" not in ack:
+            await browser.send_json({"type": "meta_error",
+                                     "reason": "handshake-failed"})
+            return
+        final, alive = await _transcribe_relay(browser, meta)
+        if not alive:
+            return
+        if final is None:
+            await browser.send_json({"type": "meta_error",
+                                     "reason": "transcribe-failed"})
+        else:
+            await browser.send_json({"type": "final", "text": final})
+            store.log_event(learner_id, "Voice", "twin", "transcribe",
+                            TRANSCRIBE_CREDIT)
+    finally:
+        try:
+            await meta.close()
+        except Exception:
+            pass
+        try:
+            await browser.close()
+        except Exception:
+            pass
+
+
 @app.post("/teacher/practice-sets")
 def post_teacher_set(data: TeacherSetIn):
     """Generate items from library excerpts; report the Verifier result."""
     parsed = parse_teacher_request(data.request)
-    items = generate_practice_set(data.request, data.note)
+    items, engine = _generate_practice_set(data.request, data.note)
     if not items:
         errors = ["No usable excerpts in the library for this request."]
     else:
@@ -3112,7 +3566,7 @@ def post_teacher_set(data: TeacherSetIn):
         errors = [_practice_failure_message(items, e) for e in verdict["failed"]]
     return {"passed": not errors, "errors": errors, "items": items,
             "skill": parsed["skill"], "level": parsed["level"],
-            "discipline": parsed["discipline"]}
+            "discipline": parsed["discipline"], "engine": engine}
 
 
 @app.post("/teacher/publish")

@@ -91,6 +91,7 @@ export default function Teacher({ go }) {
               <p className="muted">
                 {result.items.length} items · {result.skill} · Level {result.level}
                 {result.discipline ? ` · ${result.discipline}` : ''}
+                {result.engine && result.engine !== 'template' ? ' · via Muse Spark' : ''}
               </p>
             )}
           </div>

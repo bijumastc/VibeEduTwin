@@ -65,6 +65,7 @@ def test_parse_defaults_and_clamps():
 # --- Excerpt-built generation ----------------------------------------------
 def test_generate_uses_only_excerpts_with_sources(monkeypatch):
     monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # template path
     items = main.generate_practice_set("Make 4 practice items on grammar")
     assert len(items) == 4
     assert main.verify_practice_set(items) == []
@@ -79,6 +80,7 @@ def test_generate_uses_only_excerpts_with_sources(monkeypatch):
 
 def test_generate_mixed_types_and_deterministic(monkeypatch):
     monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # template path
     first = main.generate_practice_set("Make 4 practice items on grammar")
     second = main.generate_practice_set("Make 4 practice items on grammar")
     assert first == second
@@ -95,6 +97,7 @@ def test_generate_empty_library_fails_cleanly(monkeypatch):
 
 def test_generate_passes_and_reports_parsed_fields(monkeypatch):
     monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # template path
     res = main.post_teacher_set(main.TeacherSetIn(
         request="Make 2 practice items on verbs at Level 2"))
     assert res["passed"] is True and res["errors"] == []
@@ -110,9 +113,131 @@ def test_regenerate_note_steers_retrieval(monkeypatch):
         return _fake_query(query, n_results)
 
     monkeypatch.setattr(main, "_query_guides", spy)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # template path
     main.post_teacher_set(main.TeacherSetIn(
         request="Make 2 items on grammar", note="focus on conclusions"))
     assert seen and all("focus on conclusions" in q for q in seen)
+
+
+# --- Muse Spark grounding ------------------------------------------------------
+def _spark_reply(items):
+    import json
+    return json.dumps(items)
+
+
+def _grounded_order():
+    return {"type": "order",
+            "prompt": "Put the paragraph in order. Sentences: 1) 'Alpha point 0 "
+                      "about Grammar writing.' 2) 'Beta point 0 about Grammar "
+                      "writing.'",
+            "options": ["1,2", "2,1"], "answer": "1,2",
+            "answerExcerpt": "E1"}
+
+
+def _grounded_mcq():
+    return {"type": "mcq",
+            "prompt": "Which sentence gives grammar advice?",
+            "options": ["A) Alpha point 1 about Grammar writing.",
+                        "B) Beta point 1 about Grammar writing."],
+            "answer": "A", "answerExcerpt": "E2"}
+
+
+def _invented_mcq():
+    return {"type": "mcq", "prompt": "Which sentence is true?",
+            "options": ["A) Zebras drink lava nightly.",
+                        "B) Clouds file taxes quarterly."],
+            "answer": "A", "answerExcerpt": "E1"}
+
+
+def test_spark_grounded_items_pass_through(monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_spark_chat",
+                        lambda messages: _spark_reply(
+                            [_grounded_order(), _grounded_mcq()]))
+    items = main.generate_practice_set("Make 2 practice items on grammar")
+    assert len(items) == 2
+    assert main.verify_practice_set(items) == []
+    assert items[0]["source"] == "book0.pdf"  # E1 resolved server-side
+    assert items[1]["source"] == "book1.pdf"  # E2 resolved server-side
+    assert "book0.pdf" in items[0]["explanation"]
+    res = main.post_teacher_set(main.TeacherSetIn(
+        request="Make 2 practice items on grammar"))
+    assert res["passed"] is True and res["engine"] == "spark"
+
+
+def test_spark_invented_items_dropped_and_backfilled(monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_spark_chat",
+                        lambda messages: _spark_reply(
+                            [_grounded_mcq(), _invented_mcq()]))
+    items = main.generate_practice_set("Make 2 practice items on grammar")
+    assert len(items) == 2
+    blob = " ".join(i["prompt"] + " " + " ".join(i["options"]) for i in items)
+    assert "Zebra" not in blob and "lava" not in blob
+    assert "Alpha point" in blob  # template backfill kept the count
+    res = main.post_teacher_set(main.TeacherSetIn(
+        request="Make 2 practice items on grammar"))
+    assert res["engine"] == "mixed"
+
+
+def test_spark_failure_falls_back_to_template(monkeypatch):
+    def boom(messages):
+        raise main.SparkError("down")
+
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_spark_chat", boom)
+    items = main.generate_practice_set("Make 4 practice items on grammar")
+    assert len(items) == 4
+    assert any("Alpha point" in o for i in items for o in i["options"])
+    res = main.post_teacher_set(main.TeacherSetIn(
+        request="Make 4 practice items on grammar"))
+    assert res["engine"] == "template"
+
+
+def test_no_key_uses_template(monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    res = main.post_teacher_set(main.TeacherSetIn(
+        request="Make 2 practice items on grammar"))
+    assert res["engine"] == "template"
+    assert len(res["items"]) == 2
+
+
+def test_spark_prompt_shows_excerpts_and_note(monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    seen = {}
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+
+    def fake_post(url, body, key, timeout):
+        seen["url"] = url
+        seen["body"] = body
+        seen["key"] = key
+        return {"choices": [{"message": {"content": "[]"}}]}
+
+    monkeypatch.setattr(main, "_spark_post", fake_post)
+    main.generate_practice_set("Make 2 items on grammar", note="focus on verbs")
+    assert seen["url"] == "https://api.meta.ai/v1/chat/completions"
+    assert seen["key"] == "K"
+    assert seen["body"]["model"] == "muse-spark-1.3"
+    assert seen["body"]["response_format"] == {"type": "json_object"}
+    user_text = seen["body"]["messages"][-1]["content"]
+    assert "E1" in user_text and "Alpha point 0" in user_text
+    assert "focus on verbs" in user_text
+    assert "word-for-word" in seen["body"]["messages"][0]["content"]
+
+
+def test_excerpt_grounding_verifier():
+    excerpts = ["Alpha point here. Beta point here."]
+    good = {"prompt": "Pick: Alpha point here.", "options": ["A", "B"]}
+    verdict = main.verify("excerpt_grounding",
+                          {"items": [good], "excerpts": excerpts})
+    assert verdict == {"pass": True, "failed": [], "fix": ""}
+    bad = {"prompt": "Pick: Zebras drink lava.", "options": ["A", "B"]}
+    verdict = main.verify("excerpt_grounding",
+                          {"items": [good, bad], "excerpts": excerpts})
+    assert verdict["pass"] is False
+    assert verdict["failed"] == ["item 2: grounded-in-excerpts"]
+    assert verdict["fix"]
 
 
 # --- Publish -----------------------------------------------------------------
@@ -175,6 +300,26 @@ def test_practice_serves_generic_set_to_all(tmp_db):
         assert [i["id"] for i in got["items"]] == ["t1", "t2"]
 
 
+# --- Panel logging -------------------------------------------------------------
+def test_published_set_logs_provenance_in_panel(tmp_db):
+    learner_id = _learner(tmp_db, "Sciences")
+    store.save_teacher_set("Paragraphing", 1, "Sciences", _valid_items(), "r")
+    main.get_practice(learner_id)
+    rows = [r for r in store.get_events(learner_id) if r["tool"] == "teacher-set"]
+    assert len(rows) == 1
+    assert rows[0]["step"] == "Practise" and rows[0]["agent"] == "teacher"
+    assert "2 items" in rows[0]["result"]
+    assert "1 excerpt" in rows[0]["result"]
+    assert "verifier passed" in rows[0]["result"]
+    assert "published" in rows[0]["result"]
+
+
+def test_bank_sets_log_no_teacher_provenance(tmp_db):
+    learner_id = _learner(tmp_db, "Sciences")
+    main.get_practice(learner_id)
+    assert "teacher-set" not in [r["tool"] for r in store.get_events(learner_id)]
+
+
 # --- Page wiring (static) -------------------------------------------------------
 def test_teacher_page_wiring():
     home = (ROOT / "frontend" / "src" / "screens" / "Home.jsx").read_text(encoding="utf-8")
@@ -188,6 +333,7 @@ def test_teacher_page_wiring():
         encoding="utf-8")
     assert "Generate items" in teacher and "Verifier" in teacher
     assert "Publish" in teacher and "Regenerate" in teacher
+    assert "Muse Spark" in teacher
     assert "contentEditable" not in teacher
     practice = (ROOT / "frontend" / "src" / "screens" / "Practice.jsx").read_text(
         encoding="utf-8")

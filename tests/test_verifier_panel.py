@@ -39,7 +39,7 @@ def test_plan_checklist_matches_verifier_rules():
                  "no-invented-examples", "valid-type", "min-options",
                  "has-answer", "answer-matches-option", "has-explanation",
                  "grounded-in-excerpt", "has-controlling-idea",
-                 "not-task-topic"):
+                 "not-task-topic", "grounded-in-excerpts"):
         assert f"`{rule}`" in plan, rule
     assert '"pass"' in plan and '"failed"' in plan and '"fix"' in plan
     assert "No invented examples" in plan
