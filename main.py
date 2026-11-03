@@ -16,6 +16,7 @@ Endpoints:
   POST /scaffold/start        hand out a module task (try with no help)
   POST /scaffold/help         one rung up the ladder (question/hint/excerpt)
   POST /scaffold/show         "Show me now": jump to the book excerpt
+  POST /scaffold/steps        "Just show me the steps": the worked answer
   POST /scaffold/rewrite      accept the learner's rewrite
   POST /teacher/practice-sets  generate a set from library excerpts + verify it
   POST /teacher/publish        publish a set into learners' Practice
@@ -177,6 +178,11 @@ class ScaffoldHelpIn(BaseModel):
 
 
 class ScaffoldShowIn(BaseModel):
+    learner_id: int
+    attempt_id: str
+
+
+class ScaffoldStepsIn(BaseModel):
     learner_id: int
     attempt_id: str
 
@@ -1491,6 +1497,179 @@ def targeted_hint(module_id: str, attempt_text: str, topic: str) -> str:
     return "Use calm, exact words. No 'very' or 'really'."
 
 
+# Worked answers for impatient learners. Each module teaches its book rule as
+# topic + controlling idea: (1) name the topic, (2) fix the exact point,
+# (3) narrow it, (4) check every line supports it. Served only on the
+# explicit "Just show me the steps" ask or a repeated "Show me now" - never
+# in the normal ladder, where the twin still withholds the answer.
+# Placeholders: {topic} {genre}.
+WORKED_STEPS = {
+    "topic-sentences": [
+        "First, name the topic: {topic}.",
+        "Next, ask: what exact point will you prove about it?",
+        "Then narrow your point until one paragraph can prove it.",
+        "Finally, check every line against your point, then study the model."],
+    "thesis-statements": [
+        "First, name the topic: {topic}.",
+        "Next, take one side: what do you believe about it?",
+        "Then add your best reason in the same line.",
+        "Finally, check every line proves your view, then study the model."],
+    "developing-paragraphs": [
+        "First, write your main line about {topic}.",
+        "Next, add two lines that prove your main line.",
+        "Then cut any line that does not prove it.",
+        "Finally, check each kept line, then study the model."],
+    "coherence-flow": [
+        "First, write two true lines about {topic}.",
+        "Next, name the link: cause, contrast, or extra detail.",
+        "Then join them with the linker that shows it.",
+        "Finally, check the flow aloud, then study the model."],
+    "using-sources": [
+        "First, name whose idea about {topic} you borrow.",
+        "Next, fix the exact point you borrow.",
+        "Then write that point in your own words.",
+        "Finally, check the source is named, then study the model."],
+    "genre": [
+        "First, name your reader and your {genre} topic: {topic}.",
+        "Next, ask: which fact does your reader need first?",
+        "Then open with that fact and push the rest down.",
+        "Finally, check the first line gives it, then study the model."],
+}
+
+
+def worked_steps(module_id: str, discipline: str) -> list[str]:
+    """The four ordered steps for a module, set on the learner's topic."""
+    fmt = {"topic": DISCIPLINE_TOPICS[discipline],
+           "genre": DISCIPLINE_GENRES[discipline]}
+    return [step.format(**fmt) for step in WORKED_STEPS[module_id]]
+
+
+# One running model topic per discipline, worked across all six modules so the
+# learner sees every sentence type on the same point. Each model topic is
+# clearly different from its task topic (friction, not evaporation; street
+# plays, not the freedom struggle) so the model cannot be copied as the
+# learner's answer. Points stay familiar to first-year Indian undergraduates:
+# cycling, old phones, vaccine drives, street plays, tea stalls, city jobs.
+# Keyed (module, discipline); the genre models take {genre}.
+WORKED_MODELS = {
+    ("topic-sentences", "Sciences"):
+        "Friction explains why cycling uphill feels harder than cycling "
+        "on flat ground.",
+    ("topic-sentences", "Technology"):
+        "Software updates explain why old phones fail after support ends.",
+    ("topic-sentences", "Medicine"):
+        "Vaccination explains why polio faded from our schools.",
+    ("topic-sentences", "Arts & Humanities"):
+        "Street plays explain why busy markets turn into open theatres.",
+    ("topic-sentences", "Commerce & Management"):
+        "Tea stalls explain why small savings grow into big shops.",
+    ("topic-sentences", "Social Sciences"):
+        "City jobs explain why young people leave their farms.",
+    ("thesis-statements", "Sciences"):
+        "Colleges should teach friction tests because rough roads slow "
+        "every cyclist.",
+    ("thesis-statements", "Technology"):
+        "Shops should force updates because old phones leak data after "
+        "support ends.",
+    ("thesis-statements", "Medicine"):
+        "Schools should host vaccine drives because missed shots spread "
+        "illness fast.",
+    ("thesis-statements", "Arts & Humanities"):
+        "Colleges should fund street plays because live shows teach faster "
+        "than posters.",
+    ("thesis-statements", "Commerce & Management"):
+        "Towns should license tea stalls because tidy stalls draw daily "
+        "crowds.",
+    ("thesis-statements", "Social Sciences"):
+        "Towns should train youth because city jobs pull workers from farms.",
+    ("developing-paragraphs", "Sciences"):
+        "Friction explains why cycling uphill feels harder than cycling "
+        "on flat ground. "
+        "Rough roads grip the tyres hard. "
+        "Smooth tracks let wheels glide on.",
+    ("developing-paragraphs", "Technology"):
+        "Software updates explain why old phones fail after support ends. "
+        "Makers stop fixing flaws in old phones. "
+        "Crooks learn each old flaw fast.",
+    ("developing-paragraphs", "Medicine"):
+        "Vaccination explains why polio faded from our schools. "
+        "Nurses list each child at the gate. "
+        "No child misses the second shot.",
+    ("developing-paragraphs", "Arts & Humanities"):
+        "Street plays explain why busy markets turn into open theatres. "
+        "Actors rehearse each night in the park. "
+        "Crowds learn the songs by heart.",
+    ("developing-paragraphs", "Commerce & Management"):
+        "Tea stalls explain why small savings grow into big shops. "
+        "Owners save each coin in a tin box. "
+        "One box buys a second stall.",
+    ("developing-paragraphs", "Social Sciences"):
+        "City jobs explain why young people leave their farms. "
+        "Farms pay less than town shops. "
+        "Buses leave full each Monday dawn.",
+    ("coherence-flow", "Sciences"):
+        "Uphill rides tire legs because friction grips hard, "
+        "so riders change to low gears.",
+    ("coherence-flow", "Technology"):
+        "Old phones leak data because makers stop fixing them, "
+        "so shops push updates fast.",
+    ("coherence-flow", "Medicine"):
+        "Polio faded from schools because nurses tracked each child, "
+        "so drives visit yearly.",
+    ("coherence-flow", "Arts & Humanities"):
+        "Markets turn into theatres because actors play for free, "
+        "so crowds stay back each night.",
+    ("coherence-flow", "Commerce & Management"):
+        "Small savings grow because owners bank each coin, "
+        "so one stall becomes two.",
+    ("coherence-flow", "Social Sciences"):
+        "Young people leave farms because town shops pay more, "
+        "so buses run full each dawn.",
+    ("using-sources", "Sciences"):
+        "According to our textbook, uphill rides tire legs because friction "
+        "grips hard.",
+    ("using-sources", "Technology"):
+        "According to our guide, old phones leak data because makers stop "
+        "fixing them.",
+    ("using-sources", "Medicine"):
+        "According to our manual, polio faded from schools because nurses "
+        "tracked each child.",
+    ("using-sources", "Arts & Humanities"):
+        "According to our reader, markets turn into theatres because actors "
+        "play for free.",
+    ("using-sources", "Commerce & Management"):
+        "According to our survey, small savings grow because owners bank "
+        "each coin.",
+    ("using-sources", "Social Sciences"):
+        "According to our survey, young people leave farms because town "
+        "shops pay more.",
+    ("genre", "Sciences"):
+        "This {genre} opens with slope tests, which show why rough roads "
+        "tire riders.",
+    ("genre", "Technology"):
+        "This {genre} opens with leak counts, which show why updates matter "
+        "most.",
+    ("genre", "Medicine"):
+        "This {genre} opens with shot lists, which show why full coverage "
+        "works.",
+    ("genre", "Arts & Humanities"):
+        "This {genre} opens with play scripts, which show why crowds stay "
+        "back each night.",
+    ("genre", "Commerce & Management"):
+        "This {genre} opens with cash-box counts, which show why small "
+        "coins matter.",
+    ("genre", "Social Sciences"):
+        "This {genre} opens with bus counts, which show why youth leave "
+        "farms.",
+}
+
+
+def worked_model(module_id: str, discipline: str) -> str:
+    """The model demonstration for a module: same discipline, own point."""
+    return WORKED_MODELS[(module_id, discipline)].format(
+        genre=DISCIPLINE_GENRES[discipline])
+
+
 # --- Heuristic skill scorers (demo logic; Muse Spark plugs in here) -----------------
 def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
@@ -2126,6 +2305,10 @@ VERIFY_FIXES = {
     "answer-matches-option": "Make the answer match one option.",
     "has-explanation": "Add an explanation (learners need feedback).",
     "grounded-in-excerpt": "Use an excerpt that supports every claim.",
+    "has-controlling-idea": "Give the model a clear controlling idea: a verb like "
+                            "explains, shows, should, because, or why.",
+    "not-task-topic": "Put the model on a different topic: it must not share "
+                      "the task's topic word.",
 }
 
 # Structural subset for the curated bank (exempt from no-invented-examples).
@@ -2218,11 +2401,34 @@ def _verify_lesson_idea_rules(payload: dict) -> list[str]:
     return failed
 
 
+# Claim verbs that mark a controlling idea (a point being made, not a topic
+# being named). "must"/"need" are excluded: on their own they urge without
+# saying anything specific ("must get more care" states no point).
+WORKED_CONTROL_MARKERS = ("explain", "explains", "show", "shows", "prove",
+                          "proves", "should", "because", "why")
+
+
+def _verify_worked_model_rules(payload: dict) -> list[str]:
+    """A worked model must argue its own topic, off the task topic."""
+    payload = payload or {}
+    model = payload.get("model") or ""
+    task_words = (set(re.findall(r"[a-z]+", (payload.get("task_topic") or "").lower()))
+                  - _STOPWORDS)
+    failed = []
+    if not re.search(r"\b(" + "|".join(WORKED_CONTROL_MARKERS) + r")\b",
+                     model, re.IGNORECASE):
+        failed.append("has-controlling-idea")
+    if task_words & set(re.findall(r"[a-z]+", model.lower())):
+        failed.append("not-task-topic")
+    return failed
+
+
 def verify(kind: str, payload, context: dict | None = None,
            rules: list[str] | None = None) -> dict:
     """Run the docs/plan.md checklist. Replies only in JSON.
 
-    kind: "twin_reply" | "practice_item" | "practice_set" | "lesson_idea".
+    kind: "twin_reply" | "practice_item" | "practice_set" | "lesson_idea"
+      | "worked_model".
     context: {"message": learner text} for twin replies.
     rules: optional subset of rule ids (used for the curated bank).
     """
@@ -2235,6 +2441,8 @@ def verify(kind: str, payload, context: dict | None = None,
                   if rules is None or r in rules]
     elif kind == "lesson_idea":
         failed = _verify_lesson_idea_rules(payload)
+    elif kind == "worked_model":
+        failed = _verify_worked_model_rules(payload)
     elif kind == "practice_set":
         failed = []
         if not payload:
@@ -2605,6 +2813,35 @@ def _serve_excerpt(learner_id: int, attempt_id: str, attempt: dict,
     return _scaffold_view(attempt_id, attempt, {"excerpt": excerpt})
 
 
+def _serve_steps(learner_id: int, attempt_id: str, attempt: dict,
+                 tool: str) -> dict:
+    """Serve the worked answer: book rule, ordered steps, verified model.
+
+    The steps teach the retrieved rule; the model is served only when the
+    worked_model Verifier check passes, else it is omitted and logged.
+    """
+    modules = {m["id"]: m for m in discipline_modules(attempt["discipline"])}
+    model = worked_model(attempt["module"], attempt["discipline"])
+    verdict = verify("worked_model", {
+        "module": attempt["module"], "model": model,
+        "task_topic": DISCIPLINE_TOPICS[attempt["discipline"]]})
+    attempt["step"] = "steps"
+    store.log_event(learner_id, "Scaffold", "twin", tool,
+                    f"attempt_id={attempt_id} module={attempt['module']}")
+    payload = {
+        "steps": worked_steps(attempt["module"], attempt["discipline"]),
+        "rule": verified_excerpt(
+            module_rule_query(modules[attempt["module"]]), 2,
+            prefer_discipline=attempt["discipline"]),
+    }
+    if verdict["pass"]:
+        payload["model"] = model
+    else:
+        store.log_event(learner_id, "Scaffold", "twin", "verify-steps",
+                        f"attempt_id={attempt_id} failed={verdict['failed']}")
+    return _scaffold_view(attempt_id, attempt, payload)
+
+
 @app.post("/scaffold/start")
 def post_scaffold_start(data: ScaffoldStartIn):
     """Scaffold step (a): hand out the task; the learner tries with no help."""
@@ -2615,6 +2852,7 @@ def post_scaffold_start(data: ScaffoldStartIn):
         "learner_id": data.learner_id, "discipline": data.discipline,
         "module": data.module, "skill": content["skill"],
         "level": state["learner_level"], "step": "try", "q_index": 0,
+        "shows": 0,
     }
     store.log_event(data.learner_id, "Scaffold", "twin", "start",
                     f"attempt_id={attempt_id} module={data.module}")
@@ -2639,6 +2877,10 @@ def post_scaffold_help(data: ScaffoldHelpIn):
         attempt["step"] = "rewrite"
         return _scaffold_view(attempt_id, attempt, {
             "prompt": "Now rewrite using the pattern."})
+    if attempt["step"] == "steps":
+        attempt["step"] = "rewrite"
+        return _scaffold_view(attempt_id, attempt, {
+            "prompt": "Now write your version using the steps above."})
     if attempt["step"] == "hint":
         return _serve_excerpt(data.learner_id, attempt_id, attempt, "excerpt")
     allowed = QUESTIONS_BEFORE_HINT.get(level)
@@ -2659,14 +2901,30 @@ def post_scaffold_help(data: ScaffoldHelpIn):
 
 @app.post("/scaffold/show")
 def post_scaffold_show(data: ScaffoldShowIn):
-    """'Show me now': jump to the book excerpt, then one self-explanation ask."""
+    """'Show me now': jump to the book excerpt, then one self-explanation ask.
+
+    A repeated press means impatience: serve the worked steps instead.
+    """
     attempt_id, attempt = _scaffold_attempt_or_raise(
         data.learner_id, data.attempt_id)
     if attempt["step"] in ("rewrite", "done"):
         return _scaffold_view(attempt_id, attempt)
+    attempt["shows"] = attempt.get("shows", 0) + 1
+    if attempt["shows"] >= 2 or attempt["step"] == "excerpt":
+        return _serve_steps(data.learner_id, attempt_id, attempt, "show-me")
     view = _serve_excerpt(data.learner_id, attempt_id, attempt, "show-me")
     view["self_explanation"] = SELF_EXPLANATION
     return view
+
+
+@app.post("/scaffold/steps")
+def post_scaffold_steps(data: ScaffoldStepsIn):
+    """'Just show me the steps': the worked answer, open at any level."""
+    attempt_id, attempt = _scaffold_attempt_or_raise(
+        data.learner_id, data.attempt_id)
+    if attempt["step"] in ("rewrite", "done"):
+        return _scaffold_view(attempt_id, attempt)
+    return _serve_steps(data.learner_id, attempt_id, attempt, "steps")
 
 
 @app.post("/scaffold/rewrite")
@@ -2793,8 +3051,8 @@ def get_growth(learner_id: int):
 def independence(learner_id: int) -> dict:
     """Hint-use trend across scaffold attempts: fewer hints = more independent.
 
-    Compares hint + "Show me now" uses in the most recent attempts against the
-    same number of attempts just before (up to 5 each side).
+    Compares hint + "Show me now" + worked-steps uses in the most recent
+    attempts against the same number of attempts just before (up to 5 each side).
     """
     helps: dict[str, int] = {}
     order: list[str] = []
@@ -2806,7 +3064,7 @@ def independence(learner_id: int) -> dict:
         if aid not in helps:
             helps[aid] = 0
             order.append(aid)
-        if row["tool"] in ("hint", "show-me"):
+        if row["tool"] in ("hint", "show-me", "steps"):
             helps[aid] += 1
     if len(order) < 2:
         return {"attempts": len(order), "recent_helps": sum(helps.values()),

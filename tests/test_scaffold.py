@@ -36,6 +36,11 @@ def _help(learner_id, attempt_id, text=""):
         learner_id=learner_id, attempt_id=attempt_id, attempt_text=text))
 
 
+def _steps(learner_id, attempt_id):
+    return main.post_scaffold_steps(main.ScaffoldStepsIn(
+        learner_id=learner_id, attempt_id=attempt_id))
+
+
 def _hit():
     return (["First. Second. Third. Fourth."],
             [{"source": "guide.pdf", "chapter": "Chapter 2", "license": "CC BY"}])
@@ -206,6 +211,164 @@ def test_independence_new_and_steady(tmp_db):
     with pytest.raises(HTTPException) as exc:
         main.get_independence(999)
     assert exc.value.status_code == 404
+
+
+def test_steps_serve_sequential_worked_answer(tmp_db):
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    served = _steps(learner_id, attempt)
+    assert served["step"] == "steps"
+    assert len(served["steps"]) == 4
+    for step, marker in zip(served["steps"], ("First", "Next", "Then", "Finally")):
+        assert step.startswith(marker), step
+    assert "evaporation" in " ".join(served["steps"])
+    rewritten = _help(learner_id, attempt)
+    assert rewritten["step"] == "rewrite" and "steps" in rewritten["prompt"]
+    done = main.post_scaffold_rewrite(main.ScaffoldRewriteIn(
+        learner_id=learner_id, attempt_id=attempt, text="Everyone cares about evaporation."))
+    assert done["step"] == "done"
+
+
+def test_second_show_me_escalates_to_steps(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: _hit())
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    first = main.post_scaffold_show(main.ScaffoldShowIn(
+        learner_id=learner_id, attempt_id=attempt))
+    assert first["step"] == "excerpt"
+    second = main.post_scaffold_show(main.ScaffoldShowIn(
+        learner_id=learner_id, attempt_id=attempt))
+    assert second["step"] == "steps"
+    assert len(second["steps"]) == 4
+
+
+def test_steps_open_at_any_level(tmp_db):
+    learner_id = _learner(tmp_db, {"Paragraphing": 90})
+    attempt = _start(learner_id)["attempt_id"]
+    assert _steps(learner_id, attempt)["step"] == "steps"
+    with pytest.raises(HTTPException) as exc:
+        _steps(learner_id, "no-such-attempt")
+    assert exc.value.status_code == 404
+
+
+def test_worked_steps_are_short_simple_sequential():
+    import re
+    for module_id in main.SCAFFOLD_TASKS:
+        for discipline in store.DISCIPLINES:
+            steps = main.worked_steps(module_id, discipline)
+            assert len(steps) == 4, (module_id, discipline)
+            for step, marker in zip(steps, ("First", "Next", "Then", "Finally")):
+                assert step.startswith(marker), (module_id, step)
+                assert len(step.split()) <= 30, (module_id, step)
+                assert step.isascii(), (module_id, step)
+                assert not re.search(r"\d", step), (module_id, step)
+                assert main.verify_twin_reply(step) == [], (module_id, step)
+            assert main.DISCIPLINE_TOPICS[discipline] in steps[0], (module_id, steps[0])
+            assert "check" in steps[-1].lower(), (module_id, steps[-1])
+            assert "model" in steps[-1].lower(), (module_id, steps[-1])
+
+
+def test_worked_models_show_controlling_idea():
+    for module_id in main.SCAFFOLD_TASKS:
+        seen = set()
+        for discipline in store.DISCIPLINES:
+            model = main.worked_model(module_id, discipline)
+            verdict = main.verify("worked_model", {
+                "module": module_id, "model": model,
+                "task_topic": main.DISCIPLINE_TOPICS[discipline]})
+            assert verdict == {"pass": True, "failed": [], "fix": ""}, \
+                (module_id, discipline, model)
+            seen.add(model)
+        assert len(seen) == 6, module_id  # each discipline its own point
+    assert main.worked_model("topic-sentences", "Sciences") == \
+        ("Friction explains why cycling uphill feels harder than cycling "
+         "on flat ground.")
+
+
+def test_models_share_no_task_topic_word():
+    import re
+    for (module_id, discipline), model in main.WORKED_MODELS.items():
+        task_words = (set(re.findall(
+            r"[a-z]+", main.DISCIPLINE_TOPICS[discipline].lower()))
+            - main._STOPWORDS)
+        model_words = set(re.findall(
+            r"[a-z]+", model.format(genre="report").lower()))
+        assert not (task_words & model_words), (module_id, discipline, model)
+
+
+def test_worked_model_verifier_rejects_weak():
+    weak = "Everyone cares about evaporation."
+    verdict = main.verify("worked_model", {"module": "topic-sentences",
+                                           "model": weak,
+                                           "task_topic": "evaporation"})
+    assert verdict["pass"] is False
+    assert verdict["failed"] == ["has-controlling-idea", "not-task-topic"]
+    assert verdict["fix"]
+    vague = "I believe evaporation must get more care."
+    verdict = main.verify("worked_model", {"module": "thesis-statements",
+                                           "model": vague,
+                                           "task_topic": "evaporation"})
+    assert verdict["pass"] is False
+    assert verdict["failed"] == ["has-controlling-idea", "not-task-topic"]
+    same_topic = ("Evaporation explains why wet clothes dry faster "
+                  "on a windy day.")
+    verdict = main.verify("worked_model", {"module": "topic-sentences",
+                                           "model": same_topic,
+                                           "task_topic": "evaporation"})
+    assert verdict["pass"] is False
+    assert verdict["failed"] == ["not-task-topic"]
+
+
+def test_steps_payload_carries_rule_and_model(tmp_db, monkeypatch):
+    doc = "A topic sentence names the topic and the controlling idea first."
+    meta = {"source": "guide.pdf", "chapter": "Ch 1", "license": "CC BY"}
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([doc], [meta]))
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    served = _steps(learner_id, attempt)
+    assert served["step"] == "steps"
+    assert served["rule"]["source"] == "guide.pdf"
+    assert "controlling idea" in served["rule"]["text"]
+    assert served["model"] == main.worked_model("topic-sentences", "Sciences")
+
+
+def test_steps_omit_failing_model(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([], []))
+    monkeypatch.setitem(main.WORKED_MODELS, ("topic-sentences", "Sciences"),
+                        "Everyone cares about evaporation.")
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    served = _steps(learner_id, attempt)
+    assert served["step"] == "steps"
+    assert "model" not in served
+    assert served["rule"]["text"] == main.NO_VERIFIED_EXAMPLE
+    tools = [row["tool"] for row in store.get_scaffold_events(learner_id)]
+    assert "verify-steps" in tools
+
+
+def test_steps_count_as_help_in_independence(tmp_db):
+    learner_id = _learner(tmp_db)
+    first = _start(learner_id)["attempt_id"]
+    _steps(learner_id, first)
+    _start(learner_id)  # no help
+    res = main.get_independence(learner_id)
+    assert res["attempts"] == 2
+    assert (res["recent_helps"], res["previous_helps"]) == (0, 1)
+    assert res["trend"] == "improving"
+
+
+def test_steps_ui_strings():
+    task = (ROOT / "frontend" / "src" / "components" / "ScaffoldTask.jsx").read_text(
+        encoding="utf-8")
+    assert "Just show me the steps" in task
+    assert "scaffoldSteps" in task and "<ol>" in task
+    assert "Write my version" in task
+    assert "Study this model" in task
+    assert "The rule from the books" in task
+    api = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
+    assert "scaffoldSteps" in api
 
 
 def test_scaffold_ui_strings():

@@ -53,3 +53,11 @@ structurally checked at serve time and failures are excluded.
 - `grounded-in-excerpt`: every claim in the idea text must be supported by
   the retrieved excerpt (keyword overlap per claim). On failure the builder
   re-retrieves: it tries the next excerpt until one grounds every claim.
+
+### Worked models (`worked_model`)
+
+- `has-controlling-idea`: the model must carry a clear controlling idea
+  (a claim verb such as explains, shows, should, because, or why).
+- `not-task-topic`: the model must not share the task's topic word, so it
+  cannot be copied as the learner's answer. On failure the steps are
+  served without the model.

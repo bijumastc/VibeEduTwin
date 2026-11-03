@@ -3,7 +3,8 @@ import { api } from '../api.js';
 
 // ScaffoldTask: the productive-struggle ladder for one module task.
 // (a) try with no help -> (b) guiding question -> (c) hint ->
-// (d) book excerpt -> (e) rewrite. "Show me now" jumps to (d).
+// (d) book excerpt -> (e) rewrite. "Show me now" jumps to (d);
+// "Just show me the steps" gives the worked answer for impatient learners.
 export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack }) {
   const [view, setView] = useState(null);
   const [feed, setFeed] = useState([]);
@@ -30,6 +31,12 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
         push({ kind: 'cite', text: `${cite} (${res.excerpt.license || 'license unknown'})` });
       }
     }
+    if (res.rule && res.rule.source) {
+      const cite = [res.rule.source, res.rule.chapter].filter(Boolean).join(' · ');
+      push({ kind: 'twin', label: 'The rule from the books', text: res.rule.text, cite });
+    }
+    if (res.steps) push({ kind: 'steps', label: 'Follow these steps', steps: res.steps });
+    if (res.model) push({ kind: 'model', label: 'Study this model — a different point', text: res.model });
     if (res.self_explanation) push({ kind: 'twin', label: 'Think', text: res.self_explanation });
     if (res.prompt) push({ kind: 'twin', label: 'Rewrite', text: res.prompt });
     if (res.message) push({ kind: 'twin', label: 'Done', text: res.message });
@@ -54,6 +61,7 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
     call(() => api.scaffoldHelp(view.attempt_id, text), text);
   };
   const show = () => call(() => api.scaffoldShow(view.attempt_id));
+  const steps = () => call(() => api.scaffoldSteps(view.attempt_id));
   const rewrite = () => {
     const text = draft;
     call(() => api.scaffoldRewrite(view.attempt_id, text), text);
@@ -87,7 +95,23 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
           ? <div className="card" key={i}><p>{e.text}</p></div>
           : e.kind === 'cite'
             ? <p className="muted" key={i}><em>{e.text}</em></p>
-            : (
+            : e.kind === 'steps'
+              ? (
+                <div className="card" key={i}>
+                  <div className="card-title">{e.label}</div>
+                  <ol>
+                    {e.steps.map((s, j) => <li key={j}>{s}</li>)}
+                  </ol>
+                </div>
+              )
+              : e.kind === 'model'
+                ? (
+                  <div className="card tint" key={i}>
+                    <div className="card-title">{e.label}</div>
+                    <p>{e.text}</p>
+                  </div>
+                )
+                : (
               <div className="card" key={i}>
                 <div className="card-title">{e.label}</div>
                 <p>{e.text}</p>
@@ -96,7 +120,7 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
             )
       ))}
 
-      {!done && step !== 'rewrite' && step !== 'excerpt' && (
+      {!done && step !== 'rewrite' && step !== 'excerpt' && step !== 'steps' && (
         <>
           <textarea
             placeholder="Try the task first, in your own words…"
@@ -108,11 +132,17 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
           </button>
           <div style={{ height: 10 }} />
           <button className="btn secondary" onClick={show} disabled={busy}>Show me now</button>
+          <div style={{ height: 10 }} />
+          <button className="btn secondary" onClick={steps} disabled={busy}>Just show me the steps</button>
         </>
       )}
 
       {!done && step === 'excerpt' && (
         <button className="btn" onClick={help} disabled={busy}>Rewrite now</button>
+      )}
+
+      {!done && step === 'steps' && (
+        <button className="btn" onClick={help} disabled={busy}>Write my version</button>
       )}
 
       {!done && step === 'rewrite' && (
