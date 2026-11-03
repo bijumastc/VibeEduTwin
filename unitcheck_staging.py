@@ -2,27 +2,52 @@ import sys
 sys.path.insert(0, r"C:\Users\Admin\vibeedutwin")
 import main
 
-junk_cases = [
-    ("Its purpose is to present and analyze information here.", True),
-    ("The purpose of this essay is to argue a claim here.", True),
-    ("My purpose is to win every game today.", False),
-    ("His aim is true and steady here.", False),
-    ("Supportable using available evidence and reasoning.", True),
-    ("Available evidence and reasoning support claims.", False),
-    ("For example, in his report on the products.", True),
-    ("For example, zoos should be banned to protect animals.", False),
-    ("For example, suppose your manager is busy today.", False),
-    ("For example, write a report recommending open textbooks.", False),
-    ("For example, state the thesis clearly today.", True),
-    ("For example, he goes far away today.", False),
-    ("For example, he writes.", False),
-    ("For example, labs open every report with findings.", False),
-]
 fails = 0
-for raw, want_junk in junk_cases:
-    is_junk = main.clean_excerpt_text(raw) == ""
-    ok = is_junk == want_junk
+def check(name, got, want):
+    global fails
+    ok = got == want
     fails += not ok
-    print("OK " if ok else "FAIL", repr(raw[:55]),
-          "" if ok else ("want junk=" + str(want_junk)))
+    print("OK " if ok else "FAIL", name, "" if ok else (repr(got) + " want " + repr(want)))
+
+check("caps-colon", main.clean_excerpt_text(
+    "TECHNICAL BACKGROUND: some reports need data here."), "")
+check("nasa", main.clean_excerpt_text(
+    "NASA: Mars missions continue today here."), "Mars missions continue today here.")
+check("xref-edition", main.clean_excerpt_text(
+    "See Edition 233 technical notes today."), "")
+check("version-kept", main.clean_excerpt_text(
+    "Version 22 released today here."), "Version 22 released today here.")
+check("bare-heading", main.clean_excerpt_text("References."), "")
+check("intro-psy", main.clean_excerpt_text("Introduction to Psychology."),
+      "Introduction to Psychology.")
+check("it-open", main.clean_excerpt_text(
+    "It should open with an introduction here."), "")
+check("it-open-soon", main.clean_excerpt_text(
+    "It should open soon after repairs."), "It should open soon after repairs.")
+check("it-contain", main.clean_excerpt_text(
+    "It should contain data and evidence."), "")
+check("it-follow", main.clean_excerpt_text(
+    "It should follow a logical structure here."), "")
+check("it-follow-soon", main.clean_excerpt_text(
+    "It should follow soon after that."), "It should follow soon after that.")
+check("show-should", main.clean_excerpt_text(
+    "The show should end with a bang."), "The show should end with a bang.")
+
+repairs = [
+    ("Write a per suasive essay today.", "Write a persuasive essay today."),
+    ("She spoke per suasively to voters.", "She spoke persuasively to voters."),
+    ("The organi zation meets weekly now.", "The organization meets weekly now."),
+    ("Civil ization advances through trade.", "Civilization advances through trade."),
+    ("Na tion building takes decades here.", "Nation building takes decades here."),
+    ("Vi sion matters for leaders today.", "Vision matters for leaders today."),
+    ("Real ize your goals this year.", "Realize your goals this year."),
+    ("They stud ied late last night.", "They studied late last night."),
+    ("Good law yers argue clearly here.", "Good lawyers argue clearly here."),
+    ("Form ation flying looks amazing.", "Formation flying looks amazing."),
+    ("Take immediate a ction today now.", "Take immediate action today now."),
+    ("Sea port cities grow fast now.", "Sea port cities grow fast now."),
+    ("Sodium ion levels rise daily now.", "Sodium ion levels rise daily now."),
+]
+for raw, want in repairs:
+    check("rep:" + raw[:28], main.clean_excerpt_text(raw), want)
 print("fails:", fails)

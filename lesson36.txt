@@ -1,74 +1,74 @@
 OK  Sciences / topic-sentences :: -
     IDEA: A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.
-    EX:   Nikki needs a haircut and groceries.
+    EX:   The study also found that energy drinks can cause negative side effects such as headaches and "energy crashes", and can possibly lead to caffeine addiction.
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Technical Writing Essentials (H5P Edition)', 'CC BY 4.0')]
 OK  Sciences / thesis-statements :: -
     IDEA: A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.
-    EX:   Statistics: Factual statements that include numbers and often serve as evidence in a report.
-    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
+    EX:   Abstracts often follow the same order as the information in the main report.
+    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Technical Writing at LBCC', 'CC BY 4.0')]
 OK  Sciences / developing-paragraphs :: -
     IDEA: One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.
-    EX:   Therefore, you must have a plan for keeping careful notes on what you have done, how you have done it, and what you observed.
+    EX:   More detailed reports may require a Literature Review section.
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Technical Writing Essentials', 'CC BY 4.0')]
 OK  Sciences / coherence-flow :: -
     IDEA: Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.
-    EX:   For example: Focus groups were conducted in a seminar room at the University of Alberta.
-    BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Navigating an Undergraduate Degree in the Social Sciences', 'CC BY-NC 4.0')]
+    EX:   Consequently, an axial code might be a phrase like our principal encourages different teaching methods.
+    BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Research Methods for the Social Sciences: An Introduction', 'CC BY-NC-SA 4.0')]
 OK  Sciences / using-sources :: -
     IDEA: Name the source each time you borrow. Citations point to the author. Your own words carry your voice.
-    EX:   It is important to use the correct conventions for each type of source, as readers familiar with academic conventions will expect this, and they will be able to tell what
-    BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0'), ('Technical Writing Essentials', 'CC BY 4.0')]
+    EX:   Citations according to MLA consist of two elements: in-text citations (also called parenthetical citations); and a bibliography called a Work Cited (or Works Cited, if mu
+    BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0')]
 OK  Sciences / genre :: -
     IDEA: A lab report reports facts in order. It opens with what matters most. Short parts keep it easy to scan.
-    EX:   Therefore, you must have a plan for keeping careful notes on what you have done, how you have done it, and what you observed.
-    BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA'), ('Technical Writing Essentials', 'CC BY 4.0')]
+    EX:   More detailed reports may require a Literature Review section.
+    BOOKS: [('Technical Writing at LBCC', 'CC BY 4.0'), ('Technical Writing Essentials', 'CC BY 4.0')]
 OK  Technology / topic-sentences :: -
     IDEA: A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.
-    EX:   Statistics: Factual statements that include numbers and often serve as evidence in a report.
+    EX:   Proficient report writers in all academic disciplines and professions use language that is clear, direct, economical, and conventional. Moreover, they often use a special
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Technology / thesis-statements :: -
     IDEA: A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.
-    EX:   Statistics: Factual statements that include numbers and often serve as evidence in a report.
-    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
+    EX:   Analytical Reports come in all shapes and sizes - from a couple of soft-copy pages shared electronically to a booksized binder.
+    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Professional Communications', 'CC BY-NC-SA 4.0')]
 OK  Technology / developing-paragraphs :: -
     IDEA: One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.
     EX:   For example, a discussion of power and speed of tablet computers is going to necessitate some discussion of RAM, megahertz, and processors.
     BOOKS: [('Professional Communications', 'CC BY-NC-SA 4.0'), ('Technical Writing Essentials (H5P Edition)', 'CC BY 4.0')]
 OK  Technology / coherence-flow :: -
     IDEA: Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.
-    EX:   Standard operating procedures (SOPs) are more for procedures in which a process is performed - for example, taking a dental impression.
-    BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Technical Writing at LBCC', 'CC BY 4.0')]
+    EX:   Presenting coherent and engaging information as a team takes practice and coordination, and while different team members may share the work by being responsible for diffe
+    BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Technical Communication for TCOM 104', 'CC BY-NC-SA 4.0')]
 OK  Technology / using-sources :: -
     IDEA: Name the source each time you borrow. Citations point to the author. Your own words carry your voice.
-    EX:   For example, Engineering generally uses IEEE or APA Style Social Sciences generally use APA Humanities disciplines often use MLA or Chicago Style The Sciences generally u
+    EX:   For example, Engineering generally uses IEEE or APA Style.
     BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0'), ('Technical Writing Essentials (H5P Edition)', 'CC BY 4.0')]
 OK  Technology / genre :: -
     IDEA: A technical report reports facts in order. It opens with what matters most. Short parts keep it easy to scan.
-    EX:   For example, a discussion of power and speed of tablet computers is going to necessitate some discussion of RAM, megahertz, and processors.
-    BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA'), ('Technical Writing Essentials (H5P Edition)', 'CC BY 4.0')]
+    EX:   Most report introductions address the following elements: background information, problem or purpose, significance, scope, methods, organization, and sources.
+    BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA')]
 OK  Medicine / topic-sentences :: -
     IDEA: A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.
-    EX:   Statistics: Factual statements that include numbers and often serve as evidence in a report.
-    BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
+    EX:   Dog owners should be prohibited from taking their pets on public beaches.
+    BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0')]
 OK  Medicine / thesis-statements :: -
     IDEA: A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.
     EX:   For example, if you found that the academic performance of student athletes was higher than that of nonathletes, you might write the following thesis statement: Although 
     BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Medicine / developing-paragraphs :: -
     IDEA: One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.
-    EX:   First Main Point Give the first main point related to the thesis.
-    BOOKS: [('The Scholarship of Writing in Nursing Education (1st Canadian Edition)', 'CC BY-SA 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
+    EX:   The analysis of simple table salt, for example, would require a deconstruction of its parts - the elements sodium (Na) and chloride (Cl).
+    BOOKS: [('The Scholarship of Writing in Nursing Education (1st Canadian Edition)', 'CC BY-SA 4.0'), ('Writing for Success', 'CC BY-NC-SA 3.0')]
 OK  Medicine / coherence-flow :: -
     IDEA: Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.
-    EX:   For example, compare these passages: Version A (That I Rewrote): Granovetter begins by looking at balance theory.
+    EX:   Weak ties may not necessarily be bridges, but Granovetter argues that bridges will be weak.
     BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0')]
 OK  Medicine / using-sources :: -
     IDEA: Name the source each time you borrow. Citations point to the author. Your own words carry your voice.
-    EX:   It is important to use the correct conventions for each type of source, as readers familiar with academic conventions will expect this, and they will be able to tell what
-    BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0'), ('Technical Writing Essentials', 'CC BY 4.0')]
+    EX:   For this to work, the information in the citation (author and year) must be the same in the corresponding parts of the reference so the reader can make the connection.
+    BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0'), ('Communication at Work', 'CC BY 4.0')]
 OK  Medicine / genre :: -
     IDEA: A case report reports facts in order. It opens with what matters most. Short parts keep it easy to scan.
-    EX:   An assignment for an analytical report will likely include words such as analyze, compare, contrast, cause, and/or discuss, indicating the specific purpose of the report.
+    EX:   Finally, an analysis of the results concludes the case study.
     BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Arts & Humanities / topic-sentences :: -
     IDEA: A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.
@@ -76,51 +76,51 @@ OK  Arts & Humanities / topic-sentences :: -
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0')]
 OK  Arts & Humanities / thesis-statements :: -
     IDEA: A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.
-    EX:   Insightful i.e. they challenge assumptions and offer new ways of seeing or responding to challenging questions or problems.
-    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Writing About Literature', 'CC BY-NC-SA 4.0')]
+    EX:   Once a workin gthesis statement has been created, then it is time to begin buildin gthe body of the essay.
+    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ("Let's Get Writing", 'CC BY-NC-SA 4.0')]
 OK  Arts & Humanities / developing-paragraphs :: -
     IDEA: One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.
-    EX:   Implement varying language structures in the process of composing.
+    EX:   Left-to-right flow - horizontal: Images progress across the poster like lines of text, from left to right.
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Arts & Humanities / coherence-flow :: -
     IDEA: Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.
-    EX:   ONE clear purpose i.e. it does one specific thing.
+    EX:   With the exception of paragraphs used to narrate a complex experience ore vent (whic hstill have clear foci), most paragraphs make ONE clear point.
     BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Writing About Literature', 'CC BY-NC-SA 4.0')]
 OK  Arts & Humanities / using-sources :: -
     IDEA: Name the source each time you borrow. Citations point to the author. Your own words carry your voice.
-    EX:   This system of formatting and citation is used most by academic disciplines in the arts and humanities.
+    EX:   Citations according to MLA consist of two elements: in-text citations (also called parenthetical citations); and a bibliography called a Work Cited (or Works Cited, if mu
     BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0')]
 OK  Arts & Humanities / genre :: -
     IDEA: An essay reports facts in order. It opens with what matters most. Short parts keep it easy to scan.
     EX:   Essays written for an academic audience follow a structure with which you are likely familiar: Intro, Body, Conclusion.
-    BOOKS: [('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0')]
+    BOOKS: [('EmpoWord: A Student-Centered Anthology & Handbook for College Writing', 'CC BY-NC 4.0'), ('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0')]
 OK  Commerce & Management / topic-sentences :: -
     IDEA: A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.
-    EX:   Each aspect of your proposal has its place, and it is to your advantage to respect that tradition and use the categories effectively to highlight your product or ser vice
+    EX:   A clear presentation, often with visual aids, of the process from start to finish with specific, dated benchmarks noted.
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Professional Communications', 'CC BY-NC-SA 4.0')]
 OK  Commerce & Management / thesis-statements :: -
     IDEA: A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.
-    EX:   Statistics: Factual statements that include numbers and often serve as evidence in a report.
-    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
+    EX:   A vital part of any business or organization, reports document specific information for specific audiences, goals, or functions.
+    BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Professional Communications', 'CC BY-NC-SA 4.0')]
 OK  Commerce & Management / developing-paragraphs :: -
     IDEA: One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.
-    EX:   For example, write a report recommending open textbooks as a solution to the rising cost of traditional textbooks being a significant issue for students.
+    EX:   A clear presentation, often with visual aids, of the process from start to finish with specific, dated benchmarks noted.
     BOOKS: [('Professional Communications', 'CC BY-NC-SA 4.0')]
 OK  Commerce & Management / coherence-flow :: -
     IDEA: Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.
-    EX:   A sales report, for example, is not designed to make an individual sale.
+    EX:   Reports vary by size, format, and function.
     BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Communication for Business Success', 'CC BY-NC-SA 3.0')]
 OK  Commerce & Management / using-sources :: -
     IDEA: Name the source each time you borrow. Citations point to the author. Your own words carry your voice.
-    EX:   It is important to use the correct conventions for each type of source, as readers familiar with academic conventions will expect this, and they will be able to tell what
-    BOOKS: [('Communication at Work', 'CC BY 4.0'), ('Technical Writing Essentials', 'CC BY 4.0')]
+    EX:   Citations according to MLA consist of two elements: in-text citations (also called parenthetical citations); and a bibliography called a Work Cited (or Works Cited, if mu
+    BOOKS: [('Communication at Work', 'CC BY 4.0'), ('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0')]
 OK  Commerce & Management / genre :: -
     IDEA: A business report reports facts in order. It opens with what matters most. Short parts keep it easy to scan.
-    EX:   For example, write a report recommending open textbooks as a solution to the rising cost of traditional textbooks being a significant issue for students.
-    BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA'), ('Professional Communications', 'CC BY-NC-SA 4.0')]
+    EX:   Reports vary by size, format, and function.
+    BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA'), ('Communication for Business Success', 'CC BY-NC-SA 3.0')]
 OK  Social Sciences / topic-sentences :: -
     IDEA: A topic sentence tells the main idea. It comes first in the paragraph. The other lines follow it.
-    EX:   Statistics: Factual statements that include numbers and often serve as evidence in a report.
+    EX:   Yet food production is responsible for up to 30 percent of greenhouse gas emissions (Barnard).
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Social Sciences / thesis-statements :: -
     IDEA: A thesis states your view in one line. It must be debatable, not a plain fact. All your lines prove it.
@@ -128,18 +128,18 @@ OK  Social Sciences / thesis-statements :: -
     BOOKS: [('The Process of Research Writing', 'CC BY-NC-SA 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Social Sciences / developing-paragraphs :: -
     IDEA: One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.
-    EX:   As you write these paragraphs, consider using the point, evidence, and analysis pattern: The point is the central idea of the paragraph, usually given in a topic sentence
+    EX:   The paragraphs that follow show the point-evidence-analysis pattern in practice.
     BOOKS: [('Writing for Success', 'CC BY-NC-SA 3.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 OK  Social Sciences / coherence-flow :: -
     IDEA: Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.
-    EX:   In each of these cases, the researcher is most likely recording the manifest content, or more obvious, stated content in the message, such as words or phrases contained i
+    EX:   From a qualitative approach, the researcher begins with a research question (as opposed to a hypothesis) and looks for themes to emerge from the data, whic hare then rein
     BOOKS: [('Writing in College: From Competence to Excellence', 'CC BY-NC-SA 4.0'), ('Research Methods: Exploring the Social World in Canadian Context', 'CC BY-NC')]
 OK  Social Sciences / using-sources :: -
     IDEA: Name the source each time you borrow. Citations point to the author. Your own words carry your voice.
-    EX:   This system of formatting and citation is used most by academic disciplines in the arts and humanities.
+    EX:   Citations according to MLA consist of two elements: in-text citations (also called parenthetical citations); and a bibliography called a Work Cited (or Works Cited, if mu
     BOOKS: [('Choosing & Using Sources: A Guide to Academic Research', 'CC BY 4.0'), ('In Practice: A Guide to Rhetoric, Genre, and Success in First-Year Writing', 'CC BY-NC-SA 4.0')]
 OK  Social Sciences / genre :: -
     IDEA: A research report reports facts in order. It opens with what matters most. Short parts keep it easy to scan.
-    EX:   The executive summary or abstract is a paragraph that highlights the findings of the report.
-    BOOKS: [('Professional and Technical Writing', 'CC BY-NC-SA'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
+    EX:   The bibliography contains, in addition to those cited in the report, sources that readers can consult to learn more.
+    BOOKS: [('Technical Writing at LBCC', 'CC BY 4.0'), ('Writing Guide with Handbook (OpenStax)', 'CC BY-NC-SA 4.0')]
 --- 0 lessons flagged ---

@@ -284,11 +284,14 @@ def first_sentences(text: str, n: int = 3) -> str:
 NO_VERIFIED_EXAMPLE = "No verified example in our library yet."
 
 
-# Fragments counted as damage. Most are never legitimate standalone words;
-# vice/duct/port are real words but almost never standalone in writing
-# guides ("ser vice", "air duct" excepted).
+# Fragments counted as damage. Short ones are never legitimate standalone
+# words (vice/duct/port almost never are in writing guides); long ones are
+# word-tails ("product" -> "pr oduct").
 _DMG_FRAGS = ("ed|es|ly|ng|nd|nt|th|ou|ti|ts|st|sy|ny|ch|sh|wh|ck|gh|"
-              "ry|ty|dy|py|qu|un|ing|dir|der|ter|ect|vice|duct|port")
+              "ry|ty|dy|py|qu|un|ing|dir|der|ter|ect|rect|vice|duct|port|ce|"
+              "ow|ur|rt|ort|oduct|rvice|edures|ocedures|cedures|dures|ures")
+_DMG_LONG = ("oduct|rvice|edures|ocedures|cedures|dures|ures|ing|der|ter|"
+             "ect|rect")
 # Split two-letter words. PASS_A runs before the single-letter rules (these
 # would misglue otherwise: "an d cons" must heal left, not to "andcons");
 # PASS_B runs after ("a t est" must heal right to "a test", not "at est").
@@ -300,7 +303,8 @@ _PASS_A = (r"a nd|an d|i s|u s|u p|i t|o n|e nd|e ach|e very|e ven|"
             r"e xcept|e xplain|e arly|e asy|e nough|e ntire|e ssay")
 _PASS_B = (r"o f|t o|i n|a t|b e|y ou|y our|o r|yo u|you r|fo r|ou r|"
            r"o ur|d o|g o|n o|m y|w e|h e|he re|s o|i f|i ts|a m|a s|p m|"
-           r"o ld|o ff|o ut|u se|u pon|a re|a ll|a n|be gin|beg in|ta ke|tak en|"
+           r"o ld|o ff|o ut|u se|u pon|a re|a ll|a n|a ction|be gin|beg in|"
+           r"ta ke|tak en|"
            r"ma ke|li ke|ti me|na me|sa me|ca me|be come|bec ome|beco me|"
            r"be fore|bef ore|befo re|be tween|bet ween|betw een|writ ten|"
            r"wri tten|wr itten|writt en|"
@@ -318,7 +322,8 @@ _PASS_B = (r"o f|t o|i n|a t|b e|y ou|y our|o r|yo u|you r|fo r|ou r|"
            r"o ther|o nly|o ften|o rder|o rganize|u nder|u ntil|u seful|"
            r"u sual|u nit|y ear|y et|y oung|r eport|r eports|r esearch|"
            r"r esult|r esults|r eader|r eaders|r eview|r eviews|r eason|"
-           r"r easons|r ule|r ules")
+           r"r easons|r ule|r ules|es say|es says|a ny|an y|a ge|"
+           r"pr actice|r ent|nar rate|we ak|wea k")
 
 
 def _normalize_text_marks(text: str) -> str:
@@ -327,26 +332,51 @@ def _normalize_text_marks(text: str) -> str:
              "\u2013": "-", "\u2014": " - ", "\u2026": "...", "\xa0": " ",
              "\u2022": " ", "\u25aa": " ", "\u25cf": " ", "\u25e6": " ",
              "\u25e7": " ", "\u2023": " ", "\u2043": " ", "\u2219": " ",
-             "\u00b7": " ", "\uf0b7": " "}
+             "\u00b7": " ", "\uf0b7": " ", "\ufffd": ""}
+    text = text.replace(" \ufffd ", ". ")  # bullet marker is a boundary
     for old, new in marks.items():
         text = text.replace(old, new)
+    text = text.replace("  ", " ")
+    text = re.sub(r"\s+([.,;:!?])", r"\1", text)  # "aviation ."
+    text = re.sub(r"([A-Za-z0-9])\(", r"\1 (", text)  # "guides(http"
     text = re.sub(r"(\w)- (\w)", r"\1\2", text)  # split words: "con- clude"
     # Letter-spacing damage, in dependency order. Single heads exclude
     # a/e/i/o/u/x/y ("a cat", "e mail", "x ray" stay) and r ("or not" stays).
     text = re.sub(rf"\b({_PASS_A})\b(?!\s+(?-i:[A-Z]))",
                   lambda m: m.group(1).replace(" ", ""), text, flags=re.IGNORECASE)
-    text = re.sub(r"([a-z]{2,}) (s)\b(?!-)", r"\1\2", text)  # plurals first
+    text = re.sub(r"([A-Za-z]{2,}) (s)\b(?!-)", r"\1\2", text)  # plurals first
     text = re.sub(r"\b([b-df-hj-npqsvwz]) ([a-z]{2,})\b", r"\1\2", text)
     # Head "t" refuses a two-letter left word: "No t ever" heals to "Not
     # ever" via PASS_B, not to "No tever".
     text = re.sub(r"(?<![A-Za-z][A-Za-z] )\b(t) ([a-z]{2,})\b", r"\1\2", text)
+    # Uppercase heads at sentence starts ("T able" -> "Table"). Mid-sentence
+    # singles stay ("Box B contains" is a label, not damage). The guard keeps
+    # compounds ("B team", "B minus", "T cell", "T shirt", "B flat", "Z axis",
+    # "B vitamin", "C note", "B mark", "B average", "C section") safe.
+    text = re.sub(r"(?:^|(?<=[.!?]\s))([B-DF-HJ-NPQSTVWZ]) "
+                  r"((?!(?i:team\w*|side|plot\w*|plan\w*|movi\w+|grade\w*|"
+                  r"level\w*|day|game\w*|minus|plus|string\w*|cells?|shirts?|"
+                  r"section|flat|sharp|natural|axis|axes|vitamin\w*|note\w*|"
+                  r"marks?|average\w*|tests?)\b)[A-Za-z]{2,})\b",
+                  r"\1\2", text)
     # "ing" splits ("Sing ing") glue left, unless "incredible" follows.
     # Runs before "ly" so "are ly ing" heals to "are lying".
     text = re.sub(r"([a-z]{2,}) (ing)\b(?!-)(?!\s+credib\w*\b)", r"\1\2", text)
-    for tail in ("ow", "e", "n", "ur", "ou", "ck", "gh", "ng", "nd",
+    for tail in ("ow", "n", "ur", "ou", "ck", "gh", "ng", "nd",
                  "nt", "ts", "ly", "ce", "uct", "rt", "ort", "oduct",
-                 "rvice", "edures", "ocedures", "cedures", "dures", "ures"):
-        text = re.sub(rf"([a-z]{{2,}}) ({tail})\b(?!-)", r"\1\2", text)
+                 "rvice", "edures", "ocedures", "cedures", "dures", "ures",
+                 "ect", "rect", "suasive", "suasively", "zation", "sation",
+                 "tization", "ization", "isation", "tion", "sion", "ssion",
+                 "ize", "ise", "yzed", "ysed", "ying", "ied", "ies", "yer",
+                 "yers", "ers", "ation", "ition", "ction", "ay",
+                 "egories", "ojects", "ge", "oduction", "duction",
+                 "troduction", "ferent", "wings", "ilva", "ent",
+                 "dination", "lem", "ance", "ormation", "rmation",
+                 "mation", "formation", "ctions"):
+        text = re.sub(rf"([A-Za-z]{{2,}}) ({tail})\b(?!-)", r"\1\2", text)
+    # Tail "e" ("Th e"), but never after be/he/me/we/us ("Be early" stays).
+    text = re.sub(r"(?<!\b(?i:be|he|me|we|us) )([A-Za-z]{2,}) (e)\b(?!-)",
+                  r"\1\2", text)
     # Tail "t" ("repor t"), but never before "o": "And t o" heals right
     # ("And to" via PASS_B), not to "Andt o".
     text = re.sub(r"([a-z]{2,}) (t)\b(?!-)(?!\s+o\b)", r"\1\2", text)
@@ -357,6 +387,63 @@ def _normalize_text_marks(text: str) -> str:
     text = re.sub(rf"\b({_PASS_B})\b(?!\s+(?-i:[A-Z]))",
                   lambda m: m.group(1).replace(" ", ""), text, flags=re.IGNORECASE)
     text = re.sub(r"('s)([a-z])", r"\1 \2", text)  # "author'sfull"
+    text = re.sub(r"(n't)([a-z])", r"\1 \2", text)  # "Don'twaste"
+    for old, new in (("co-ed", "coed"), ("Co-ed", "Coed"), ("CO-ED", "COED")):
+        text = text.replace(old, new)
+    # Dropped periods ("APA Style Social Sciences generally use APA
+    # Humanities ..."). An acronym + capital starts a new sentence unless
+    # a style word or journal word follows ("APA Style", "IEEE
+    # Transactions" stay).
+    text = re.sub(r"\b([A-Z]{2,})\s+"
+                  r"((?!(?:Style|Manual|Guide|Guides|Handbook|Format|"
+                  r"Edition|Press|Transactions|Proceedings|Journals?|"
+                  r"Magazine|Standards?|Review|Quarterly)\b)[A-Z][a-z]+)",
+                  r"\1. \2", text)
+    # A pronoun start after a lowercase word is a new sentence ("...
+    # Chicago Style They show ..."), unless a quote verb leads ("said
+    # They ..." stays). "It" excluded (mid-sentence "It" is usually a
+    # typo for "it", and splitting there is worse than keeping it).
+    _QUOTE_VERBS = {"said", "says", "say", "writes", "write", "wrote",
+                    "notes", "note", "noted", "asks", "ask", "asked",
+                    "states", "state", "stated", "claims", "claim",
+                    "claimed", "argues", "argue", "argued", "shows",
+                    "show", "showed", "suggests", "suggest", "adds",
+                    "add", "added", "explains", "explain"}
+    text = re.sub(r"(\b[a-z]+)\s+((?:They|He|She|We|You|This|These|Those)\s+[a-z])",
+                  lambda m: m.group(0)
+                  if m.group(1).lower() in _QUOTE_VERBS
+                  else f"{m.group(1)}. {m.group(2)}", text)
+    # A style word + The/This + capital ("APA Style The Sciences ...").
+    text = re.sub(r"\b(Style|Manual|Guide|Guides|Handbook|Format|Edition)\s+"
+                  r"((?:The|This|These|Those)\s+[A-Z][a-z]+)",
+                  r"\1. \2", text)
+    # A style word + field + lowercase verb ("APA Style Social Sciences
+    # generally ..."). A second style word blocks it ("Style Guide
+    # update" stays).
+    text = re.sub(r"\b(Style|Manual|Guide|Handbook|Format)\s+"
+                  r"((?!(?:Guide|Manual|Format|Handbook|Edition|Style|"
+                  r"Press|Sheet|Book)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?"
+                  r"(?=\s+[a-z]))",
+                  r"\1. \2", text)
+    # A closing paren + capital starts a new sentence ("... future)
+    # Abstracts ..."): the paren ends a heading or aside.
+    text = re.sub(r"(\))\s+([A-Z][a-z]+)", r"\1. \2", text)
+    # Doubled content words ("Citations Citations") are heading echoes;
+    # doubled function words ("had had", "that that") are grammar.
+    _DUP_OK = {"had", "that", "do", "can", "will", "would", "should",
+               "could", "may", "might", "must", "shall", "is", "was",
+               "are", "were", "be", "been", "it", "you", "we", "they",
+               "he", "she", "on", "in", "at", "to", "of", "for", "as",
+               "by", "a", "the", "and", "or", "but", "if", "so", "than",
+               "then", "when", "while", "with", "from"}
+    text = re.sub(r"\b([A-Za-z]{3,})\s+(\1)\b",
+                  lambda m: m.group(0)
+                  if m.group(1).lower() in _DUP_OK else m.group(1),
+                  text)
+    # A period without a space ("conventional.Moreover") still ends the
+    # sentence. Abbreviations ("U.S.A", "e.g.X") stay glued.
+    text = re.sub(r"(?<!e\.g)(?<!i\.e)(?<![A-Z])([.!?])([A-Z][a-z])",
+                  r"\1 \2", text)
     return text
 
 
@@ -409,18 +496,42 @@ def _is_junk_sentence(sentence: str) -> bool:
         return True  # course-schedule headers
     if re.search(r"[A-Z][a-z]+\s+\d{2,3}\s+[A-Z]", s):
         return True  # glued running head ("Essentials 227 Writing")
+    if re.search(r"\b(Edition|Chapter|Page|Section|Unit|Part|Volume|Book|"
+                 r"Figure|Table)\s+\d{1,4}\s+[a-z]", s):
+        return True  # cross-reference ("Edition 233 technical ...")
+    if re.fullmatch(rf"(?:{_HEADINGS})(?:\s+[A-Z0-9]+)?[.!]?", s):
+        return True  # bare heading remnant ("References", "Appendix A")
+    if re.fullmatch(rf"(?:{_HEADINGS})\s*\(.*\)[.!]?", s):
+        return True  # heading + paren fragment ("Recommendations (...)")
+    if re.match(r"It (should|must)\s+(open|begin|start)\s+(with|by|using)\b", s):
+        return True  # pronoun prescription ("It should open with ...")
+    if re.match(r"It (should|must)\s+(contain|include)\s+(the\s+)?(data|parts?|"
+                 r"thesis|arguments?|claims?|introduction|conclusion|summary|"
+                 r"details?|evidence|examples?|citations?|sources?|facts?)\b", s):
+        return True  # pronoun prescription ("It should contain data")
+    if re.match(r"It (should|must)\s+(follow|state|present|describe|explain|"
+                 r"discuss)\s+(a|an|the|this|that|these|those|each|every|all|"
+                 r"both|such|same)\b", s):
+        return True  # pronoun prescription ("It should follow a ...")
     if re.search(r"(?i)except where otherwise noted|all rights reserved", s):
         return True  # license boilerplate
     if re.search(r"(?i)\b(canvas|blackboard|moodle)\b", s):
         return True  # LMS instructions, not writing samples
+    if re.search(r"\b[a-z0-9-]+\.(org|com|edu|net|gov|io)\b", s):
+        return True  # link boilerplate ("Access for free at openstax.org")
     if re.search(r"\s\d{1,2}\.$", s):
         return True  # trailing list number ("activities 2.")
+    if re.search(r"[a-z]\s+(Based|For|In|On|At|By|With|From|When|If|"
+                 r"This|That|These|Those|It|They|He|She|We|You|"
+                 rf"{_GLUE_IMPV_CAP})\b", s):
+        return True  # glued sentences ("analysis Based on ...")
     if re.match(r"(?i)(its|their|his|her|the|this|that|a|an)\s+"
                 r"(?:\w+\s+){0,3}?(purpose|function|role)\b.{0,25}"
                 r"\bis\s+(not\s+)?to\b", s):
         return True  # context-needy purpose line ("Its purpose is to ...")
     if re.match(r"[A-Z][a-z]*(able|ible|ive|ful|less)\s+"
-                r"(using|with|by|for|from|in|on|of)\b", s) and "," not in s:
+                r"((using|with|by|for|from|in|on|of)\b|i\.e\.|e\.g\.)"
+                r"(?=\s|$)", s) and "," not in s:
         return True  # bullet fragment ("Supportable using ...")
     if re.match(r"For (example|instance)\b", s) and not _has_verb_signal(s):
         return True  # verbless stub ("For example, in his report ...")
@@ -431,10 +542,28 @@ def _is_junk_sentence(sentence: str) -> bool:
     return False
 
 
+# Section headings that glue onto the next sentence ("Background Discuss
+# the history ..."). Stripped only before a capital (so "Results show ..."
+# survives) or with a colon ("Abstract: This study ..." -> the sentence).
+_HEADINGS = ("Background|Introduction|Introductions|Methods|Methodology|"
+             "Results|Conclusion|Conclusions|Abstract|Summary|Summaries|"
+             "Overview|Discussion|Discussions|References|Appendix|"
+             "Appendices|Foreword|Preface|Acknowledgements|Acknowledgments|"
+             "Glossary|Index|Contents|Findings|Finding|Recommendation|"
+             "Recommendations|Analysis|Further Reading|Note|Timeline|"
+             "Budget|Schedule|Milestones|Deliverables|Scope|Objectives?|"
+             "Cause and [Ee]ffect|Comparison|Contrast|Definition|"
+             "Classification|Process|Narration|Description|"
+             "Argumentation|Exemplification")
+
+
 def clean_sentences(doc: str) -> list[str]:
     """Split a raw chunk into cleaned sentences, junk removed."""
     text = _normalize_text_marks(doc or "")
-    for abbr in ("e.g.", "i.e.", "Mr.", "Ms.", "Mrs.", "Dr.", "vs."):
+    for abbr in ("e.g.", "i.e.", "Mr.", "Ms.", "Mrs.", "Dr.", "vs.",
+                 "U.S.", "U.K.", "St.", "Jr.", "Sr.", "Ph.D.", "M.D.",
+                 "B.A.", "M.A.", "a.m.", "p.m.", "A.M.", "P.M.", "Fig.",
+                 "Ch.", "Sec.", "Vol.", "No.", "pp.", "al."):
         text = text.replace(abbr, abbr.replace(".", "\x00"))
     cleaned = []
     for part in re.split(r"(?<=[.!?])\s+", text.strip()):
@@ -443,6 +572,12 @@ def clean_sentences(doc: str) -> list[str]:
         # Page-number + running-head runs: "290 Suzan Last The study ..."
         part = re.sub(r"^\d{1,4}\s+(?:[A-Z][a-z]+\s+){1,2}(?=[A-Z])", "", part)
         part = re.sub(r"^\d{2,4}\s+(?=[A-Z])", "", part)
+        # Doubled numbers are always pagination ("274 8 Analytical ...").
+        part = re.sub(r"^\d{1,4}\s+\d{1,4}\s+(?=[A-Z])", "", part)
+        part = re.sub(rf"^(?:{_HEADINGS})\s*:\s*", "", part)
+        part = re.sub(rf"^(?:{_HEADINGS})\s+(?=[A-Z])", "", part)
+        # ALL-CAPS label + colon ("TECHNICAL BACKGROUND: ...", "Q&A: ...").
+        part = re.sub(r"^[A-Z][A-Z\d\s&'/\-]{2,}:\s*", "", part)
         # Glued ALL-CAPS header runs: "References CONSTRUCTING OUTLINES An ..."
         run = re.match(r"^((?:[A-Z][A-Za-z&'\-]*\s+){2,})(?=[A-Z])", part)
         if run and len(re.findall(r"\b[A-Z]{2,}\b", run.group(1))) >= 2:
@@ -471,14 +606,18 @@ _ARE_OK = {"you", "they", "we", "these", "those", "many", "few", "several",
 def _artifact_count(sentence: str) -> int:
     """Letter-spacing damage ("f ollow") PDF extraction sometimes leaves."""
     singles = len(re.findall(r"\b(?![aAI]\b)[A-Za-z]\s+[A-Za-z]", sentence))
-    frags = len(re.findall(rf"\b(?:{_DMG_FRAGS})\b(?=\s+[a-z])", sentence))
+    frags = len(re.findall(rf"\b(?:{_DMG_FRAGS})\b(?=\s+[a-z]|[.?!]+$)",
+                           sentence))
+    frags += len(re.findall(rf"\b(?:{_DMG_LONG})\b(?=-)", sentence))
     mismatch = 0
     for match in re.finditer(r"\b([A-Za-z]+) (are)\b", sentence):
         word = match.group(1).lower()
         if word not in _ARE_OK and not word.endswith("s"):
             mismatch += 1  # "softw are", never "books are"
     mismatch += len(re.findall(r"\b[A-Za-z]+ (ere)\b", sentence))
-    return singles + frags + mismatch
+    typos = len(re.findall(r"\b([b-df-hj-np-tv-zB-DF-HJ-NP-TV-Z])\1[a-z]{2,}\b",
+                           sentence))
+    return singles + frags + mismatch + typos
 
 
 def verified_excerpt(query_text: str, sentences: int = 3,
@@ -574,29 +713,373 @@ DEFINITION_MARKERS = ["defin", "refers to", "is called", "is known as",
 # "such as"/"e.g." usually front meta-lists ("such as visual content"),
 # while "for example"/"for instance" usually front real samples.
 SHOW_BOOSTERS = ["for example", "for instance"]
+# Linkers show flow (kept for coherence, never an example elsewhere).
+_LINKERS = ("therefore|however|moreover|furthermore|consequently|"
+            "nevertheless|nonetheless|accordingly|thus|hence|meanwhile|"
+            "instead|otherwise|then|also")
+_LINKER_START = re.compile(rf"^(?:{_LINKERS})\b,?|^So,", re.IGNORECASE)
+_LINKER_MID = re.compile(rf"\b(?:{_LINKERS})\b")
+# Mundane-name starts ("Nikki needs ...") are generic-guide filler, never a
+# discipline example. Role subjects (Reader, Writer ...) stay: they address
+# the learner. "It takes ..." stays too. Full names ("Marie Curie ...")
+# are untouched (two capitals, never matched here).
+_MUNDANE_START = re.compile(
+    r"^(?:(?:Although|Though|When|While|If|After|Before|Because|"
+    r"Since|As)\s+)?"
+    r"(?!It\b)(?!(?:Reader|Writer|Student|Teacher|Author|Researcher|"
+    r"Scientist|Doctor|Engineer|Manager|Leader|Experiment|Study|"
+    r"Trial|Survey|Project|Report|Essay|Paper|Data|Results)\b)"
+    r"[A-Z][a-z]+\s+"
+    r"(?:needs?|needed|wants?|wanted|likes?|liked|loves?|loved|"
+    r"hates?|hated|goes?|went|buys?|bought|"
+    r"makes(?!\s+(?:clear|evident|apparent|plain)\b)|made|takes?|took|"
+    r"gets?|got|gives?|gave|says?|said|thinks?|thought|feels?|felt|"
+    r"eats?|ate|drinks?|drank|sleeps?|slept|walks?|walked|runs?|ran)\b")
+# Glossary frames ("Statistics: Factual ...") define, never show. Example
+# frames and genre section labels (Methods:, Results: ...) stay.
+_GLOSSARY = re.compile(
+    r"^(?!Example:|Methods?:|Results?:|Abstract:|Introduction:|"
+    r"Discussion:|Conclusion:|References?:|Appendix:|Works Cited:)"
+    r"[A-Z][a-z]+(?:\s+[A-Za-z]+){0,2}:\s+[A-Z]")
+# Hedge starts ("Maybe ...") never show the thing.
+_HEDGE_START = re.compile(r"^(?:Maybe|Perhaps)\b")
+# Weak opinion frames ("It is important ...") never show the thing,
+# except in genre modules where enumeration can show report form.
+_WEAK_START = re.compile(
+    r"^(?:It is (?:important|necessary|essential)|"
+    r"It is (?:apparent|clear|obvious|evident) that|"
+    r"There (?:are|is))\b")
+# Conditional advice ("If you use ...") tells, never shows.
+_IF_START = re.compile(r"^If\b")
+# Dangling demonstratives ("These steps ...") need prior sentences the
+# isolated card never shows.
+_THIS_START = re.compile(r"^(?:This|These|Those|Such)\b")
+# Qualifier frames ("For the most part ...") hedge, never show.
+_QUAL_START = re.compile(
+    r"^(?:For the most part|In general|On the whole|By and large)\b")
+# Bare "It" dangles ("It reveals ..."); "It takes ..." is a keeper.
+_IT_START = re.compile(r"^It\b(?!\s+takes?\b)")
+# Textbook stage directions ("In this section you will ...").
+_TEXTBOOK_YOU = re.compile(r"^In this (?:section|chapter|unit),? you\b")
+# Emphasis caps ("ONE clear purpose ..."); citation acronyms stay.
+_CAPS_START = re.compile(
+    r"^(?!(?:APA|MLA|IEEE|Chicago|Harvard|CSE|AMA)\b)[A-Z]{2,}\b")
+# Question-word starts are fragments or how-tos (real questions are
+# filtered before scoring, so whatever remains never shows).
+_QW_START = re.compile(r"^(?:Who|What|Where|When|Why|How)\b")
+# Reader addresses ("As you write ...", "You need ...") tell, never show.
+_YOU_START = re.compile(r"^(?:As you|When you|While you|You|Your)\b")
+# Dangling place frames ("In each of these cases ...").
+_ANAPHOR_PP = re.compile(r"^(?:In each of these|In these|In those|In such)\b")
+# First-person anecdotes ("I went hiking ..."); the "i.e." guard keeps
+# the Latin abbreviation safe.
+_I_START = re.compile(r"^I\b(?!\.\s*e)(?!\s+(?:argue|claim)\b)",
+                       re.IGNORECASE)
+# Opinion frames mid-sentence (", it is clear that ...").
+_MID_WEAK = re.compile(
+    r", it is (?:important|necessary|essential)\b|"
+    r", it is (?:apparent|clear|obvious|evident) that\b", re.IGNORECASE)
+# Heading fragments ("... LEARNING OUTCOMES."). Citation acronyms after
+# citation verbs ("uses IEEE.") stay.
+_CAPS_END = re.compile(
+    r"(?:^|\s)(?:(\S+)\s+)?([A-Z]{2,}(?:\s+[A-Z]{2,}){0,2}\b[.!?]?$)")
+_CAPS_END_KEEP = {"uses", "use", "follows", "follow", "requires",
+                  "require", "cites", "cite", "per", "in"}
+
+
+def _is_caps_end(sentence: str) -> bool:
+    """A trailing all-caps run that is not a cited acronym."""
+    m = _CAPS_END.search(sentence or "")
+    if not m:
+        return False
+    prev = (m.group(1) or "").lower().rstrip(",;:")
+    return prev not in _CAPS_END_KEEP
+# Presenter frames ("Here are some examples ...") point, never show.
+_HERE_START = re.compile(r"^Here (?:are|is)\b")
+# Reader advice ("you ... should ...", "Students should ...",
+# "references should be flush ...").
+_YOU_SHOULD = re.compile(
+    r"\byou\b.{0,20}\bshould\b|\bshould\b.{0,20}\byou\b|"
+    r"\b(?:students|writers|readers|learners|authors|researchers|"
+    r"references|citations?|sources?|entries|titles?|headings?|margins?|"
+    r"fonts?|pages?|paragraphs?|images|figures|tables|charts|graphs|"
+    r"diagrams|photos|illustrations)\b"
+    r".{0,20}\bshould\b", re.IGNORECASE)
+# Demonstrative "that" + domain noun ("that contract") dangles; "that" +
+# verb ("that highlights") is a relative clause and stays.
+_THAT_NOUN = re.compile(
+    r"\bthat\s+(?:contract|report|study|essay|paper|case|result|finding|"
+    r"claim|argument|point|idea|method|approach|process|system|text|"
+    r"book|article|section|chapter|paragraph|sentence|thesis|topic)\b",
+    re.IGNORECASE)
+# Reader addressed mid-sentence ("you provide ...").
+_YOU_MID = re.compile(
+    r"\byou\s+(?:provide|develop|write|use|need|should|must|can|will|may|"
+    r"interpret|present|discuss|describe|explain|show|cite|cites|cited|"
+    r"care|feel|help)\b",
+    re.IGNORECASE)
+# News events ("COVID-19", "during the pandemic") are not writing samples.
+_NEWS_EVENT = re.compile(
+    r"covid|coronavirus|(?:during|in|since|after|before|amid)\s+"
+    r"(?:the\s+)?pandemic\b", re.IGNORECASE)
+# Vague kind-talk ("this kind of information").
+_VAGUE_KIND = re.compile(
+    r"this kind of (?:information|thing|stuff|data)|"
+    r"these kinds of (?:information|thing|stuff|data)", re.IGNORECASE)
+# Textbook purpose frames ("For our purposes here ...").
+_PURPOSES = re.compile(r"^[Ff]or (?:our|my|the) purposes\b")
+# "In your ..." always addresses the reader.
+_IN_YOUR = re.compile(r"^In your\b")
+# Counted disease stats ("350,000 deaths", "20 million infections")
+# are news, never writing samples. Uncounted claims ("Smoking causes
+# deaths") stay: those can be thesis form.
+_COUNTED_DISEASE = re.compile(
+    r"\d[\d,]*\s+(?:million|billion|thousand\s+)?(?:\w+\s+)?"
+    r"(?:deaths?|infections?|cases)\b", re.IGNORECASE)
+# Year settings ("By the end of 2020 ...") set news scenes.
+_YEAR_START = re.compile(
+    r"^(?:In|By) \d{4}\b|^(?:In|By) the (?:end|middle|start) of \d{4}\b")
+# "Other ..." always needs an antecedent the card never shows.
+_OTHER_START = re.compile(r"^Other\b")
+# Vague "Some ..." subjects never show strongly.
+_SOME_START = re.compile(r"^Some\b")
+# "below"/"above" point outside the isolated card, except measurements
+# ("below zero" stays).
+_BELOW_PTR = re.compile(
+    r"\b(?:below|above)\b(?![\s-]+(?:zero|freezing|average|normal)\b)")
+# Bare years ("(1973)", "2018") are citations or dates, never samples.
+_YEAR_PAREN = re.compile(r"\b(?:19|20)\d{2}\b")
+# Keyword stuffing ("Topic Sentence Reasoning Strategy ...").
+_KEYWORD_RUN = re.compile(r"^(?:[A-Z][a-z]+\s+){3,}")
+# Attribution fragments ("... Wikimedia Commons, Public Domain") are credits.
+_CREDITS = re.compile(
+    r"wikimedia|public domain|\bcc by\b|copyright|photo by|image by|"
+    r"figure by|courtesy of", re.IGNORECASE)
+# Punctuation starts (") ...") are mid-fragments.
+_PUNCT_START = re.compile(r"^[\042'\]\)]")
+# Dangling "them" needs an antecedent the card never shows.
+_THEM_MID = re.compile(r"\bthem\b", re.IGNORECASE)
+# "your ..." always addresses the reader.
+_YOUR_MID = re.compile(r"\byour\b", re.IGNORECASE)
+# Pronoun starts dangle ("They are positions ..."); "We recommend ..."
+# stays (recommendations are report form).
+_PRON_START = re.compile(r"^(?:They|He|She)\b")
+_WE_START = re.compile(r"^We\b(?!\s+recommend\b)")
+# Author addresses the reader ("I encourage you ...") instead of showing.
+# "We recommend ..." stays everywhere: recommendations are report form.
+# "I argue/claim/show ..." stay too: stance-taking is thesis form.
+_META_ADDRESS = re.compile(
+    rf"^(?:(?:{_LINKERS}),?\s+)?"
+    r"(?:I\s+(?:encourage|suggest|recommend|invite|ask|urge|discuss|"
+    r"describe|explain|examine|explore|consider|outline|summarize)|"
+    r"We\s+(?:encourage|suggest|invite|ask|urge))\b", re.IGNORECASE)
+# Genre words that promote a sentence for genre modules only ("This lab
+# report examines ..."). Plurals-only where the singular is a verb
+# ("result in") or gerund ("finding sources"); lab takes no digits.
+_GENRE_SIGNAL = re.compile(
+    r"\breports?\b|\bessays?\b|\bintroduction\b|\babstract\b|\bmethods?\b|"
+    r"\bresults\b|\bfindings\b|\bexperiments?\b|\blaboratory\b|"
+    r"\blab\b(?!\s*\d)|\bdata\b|\bcase[\s-]stud(y|ies)\b|\bpatients?\b|"
+    r"\bproposal\b|\bcosts?\b|\bbenefits?\b|\bexecutive\b|"
+    r"\bspecifications?\b|\bprocedures?\b|\bmanual\b|\bthesis\b|"
+    r"\barguments?\b|\bmethodology\b|\bliterature review\b")
+# Imperatives that also betray glued sentences mid-text ("conclusion
+# Indicate ..."). Drops the ones that double as proper nouns or UI labels
+# ("Schindler's List", "Edit menu"); hyphen guards keep compounds
+# ("Write-Up", "Note-Taking", "Give-and-take") and "Outline View" safe.
+_GLUE_IMPV = ("write(?![-])|add|draw|explain|describe|discuss|apply|"
+              "implement|identify|analyze|compare|contrast(?!\\s+ratio\\b)|"
+              "revise|choose|"
+              "create|develop|draft|outline(?! View\\b)|organize|include|"
+              "avoid|begin|keep|make(?![-])|take|give(?![-])(?! and take\\b)|"
+              "provide|follow(?![-])|note(?![-])|click|formulate|indicate|"
+              "conclude|summarize|finish|communicate|recognize|focus|"
+              "combine|synthesize|use(?!\\s+cases?\\b)|notice|be|"
+              "capitaliz\\w*\\b(?!\\s+on\\b)|have|has")
+# Capitalized for the glue rule: a glued second sentence starts uppercase
+# ("conclusion Indicate ..."), while lowercase verbs mid-sentence
+# ("Details that follow ...") are legitimate and must survive.
+_GLUE_IMPV_CAP = "|".join(w[0].upper() + w[1:] for w in _GLUE_IMPV.split("|"))
+
+
+# Bare imperatives ("Write a report") demoted for genre modules (which want
+# samples of the genre, not instructions). "use" excluded ("Use cases" is
+# a noun); scenario framers (consider, suppose ...) never included; UI and
+# idiom guards keep "Edit menu" and "give and take" safe.
+_IMPERATIVES = ("write|add|draw|list|state|explain|describe|discuss|apply|"
+                "implement|identify|analyze|compare|contrast(?!\\s+ratio\\b)|"
+                "review|revise|edit(?!\\s+menu\\b)|check(?!\\s+box(es)?\\b)|"
+                "choose|select(?!\\s+button\\b)|create|develop|draft|outline|"
+                "plan|organize|include|avoid|begin|start(?!\\s+menu\\b)|"
+                "continue(?!\\s+button\\b)|keep|make|take|"
+                "give(?!\\s+and\\s+take\\b)|show|provide|follow|note|name|"
+                "press(?!\\s+(release|corps|conference|kit)\\b)|"
+                "click(?!\\s+(rates?|through|bait)\\b)|"
+                "conclude|concludes(?!\\s+that\\b)|summarize|summarizes|"
+                "communicate|communicates|recognize|recognizes|"
+                "focus(?!\\s+groups?\\b)|focuses|combine|combines|"
+                "synthesize|synthesizes|use(?!\\s+cases?\\b)|uses|"
+                "notice|notices|be|capitaliz\\w*\\b(?!\\s+on\\b)|"
+                "have|has|"
+                "finish(?!\\s+line\\b)|"
+                "structure(?=\\s+(?:your|the|a|an|this|that|these|those|each|"
+                "every|all|both|such|content|paragraphs?|essays?|reports?|"
+                "sentences?|ideas?|details?|sections?|drafts?|arguments?|"
+                "points?|notes?|findings?|results?|data|text|paper|work|"
+                "writing|response|answer|thoughts)\\b)|"
+                "find(?!\\s+of\\b)|pick(?!\\s+of\\b)|locate|formulate|indicate|"
+                "search(?!\\s+(results?|engine|history|quer(y|ies)|terms?)\\b)"
+                "(?!\\s+and\\s+rescue\\b)")
+_NEG_START = ("do not|don't|does not|doesn't|can not|cannot|can't|"
+               "will not|won't|should not|shouldn't|never(?!\\s+events?\\b)")
+_INSTRUCTION = re.compile(
+    rf"^(?:(?:Then|Next(?! draft\b)|First(?! draft\b)|Finally|Now|Also)\s+)?"
+    rf"(?:{_IMPERATIVES}|{_NEG_START})\b(?!\s*-)|"
+    rf"[,;:]\s+(?:and\s+)?(?:{_IMPERATIVES}|{_NEG_START})\b(?!\s*-)",
+    re.IGNORECASE)
+
+
+def _is_instruction(sentence: str) -> bool:
+    """An instruction, not a sample ("Write a report ...")."""
+    return bool(_INSTRUCTION.search(sentence or ""))
 # Meta-talk about the concept ("the topic sentence should be ...") describes
 # instead of showing. The concept must follow the/a/an (so "my thesis is
 # that ..." samples survive) with a copula or modal close behind (so "the
 # report says sales are rising" samples survive).
-_CONCEPTS = (r"topic sentence|thesis( statement)?|paragraph|essay|"
-              r"report|coherence|citation|source")
+_CONCEPTS = (r"topic sentence|thesis( statement)?|theses|paragraph|"
+              r"essay|report|coherence|citation|source|procedures?|methods?|"
+              r"process(es)?|text|proposal|memo|emails?|letters?|resumes?|"
+              r"summary|summaries|abstract")
 _CONCEPT_META = re.compile(
-    rf"\b(the|a|an)\s+(?:[a-z]+\s+){{0,2}}({_CONCEPTS})s?\b.{{0,8}}\b(should|must|is|are|"
-    rf"was|were|means|makes? a claims?)\b|^(?:{_CONCEPTS})s?\b.{{0,8}}\b(should|must|is|"
-    r"are|was|were|means|makes? a claims?)\b")
+    rf"\b(the|a|an)\s+(?:[a-z0-9-]+\s+){{0,2}}({_CONCEPTS})s?\b.{{0,16}}\b(should|must|is|are|"
+    rf"was|were|means|indicates|describes|explains|states|presents|defines|"
+    rf"outlines|summarizes|combines|consists|comprises|advocates|argues|"
+    rf"makes? (a )?(claims?|recommendations?))\b"
+    rf"|^(?:[a-z0-9-]+\s+){{0,2}}(?:{_CONCEPTS})s?\b.{{0,16}}\b(should|must|is|"
+    r"are|was|were|means|indicates|describes|explains|states|presents|"
+    r"defines|outlines|summarizes|combines|consists|comprises|advocates|"
+    r"argues|makes? (a )?(claims?|recommendations?))\b")
 
 _STOPWORDS = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "is",
               "are", "was", "it", "for", "with", "that", "this"}
 
 
-def _show_score(sentence: str) -> int:
-    """2 shows the thing, 1 neutral, 0 defines it (never an example)."""
+def _show_score(sentence: str, coherence: bool = False,
+                genre: bool = False) -> int:
+    """2 shows the thing, 1 neutral, 0 never an example.
+
+    Zero covers definitions, meta-talk, glossary frames, mundane-name
+    filler, hedges, weak frames, author addresses and instructions.
+    Linker starts are zero outside coherence (flow is that module's
+    thing); inside coherence a bare "for example" without a linker
+    shows illustration, not flow. Genre modules exempt weak frames
+    (enumeration can show report form) but drop "for example" lines
+    that never name the genre.
+    """
     lowered = sentence.lower()
     if any(m in lowered for m in DEFINITION_MARKERS):
         return 0
     if _CONCEPT_META.search(lowered):
         return 0
+    if _GLOSSARY.search(sentence):
+        return 0
+    if _MUNDANE_START.search(sentence):
+        return 0
+    if _HEDGE_START.search(sentence):
+        return 0
+    if _META_ADDRESS.search(sentence):
+        return 0
+    if _WEAK_START.search(sentence) and not genre:
+        return 0
+    if _IF_START.search(sentence):
+        return 0
+    if _THIS_START.search(sentence):
+        return 0
+    if _QUAL_START.search(sentence):
+        return 0
+    if _IT_START.search(sentence):
+        return 0
+    if _TEXTBOOK_YOU.search(sentence):
+        return 0
+    if _CAPS_START.search(sentence):
+        return 0
+    if _QW_START.search(sentence):
+        return 0
+    if _YOU_START.search(sentence):
+        return 0
+    if _ANAPHOR_PP.search(sentence):
+        return 0
+    if _I_START.search(sentence):
+        return 0
+    if _MID_WEAK.search(sentence):
+        return 0
+    if _is_caps_end(sentence):
+        return 0
+    if _HERE_START.search(sentence):
+        return 0
+    if _YOU_SHOULD.search(sentence):
+        return 0
+    if _THAT_NOUN.search(sentence):
+        return 0
+    if _YOU_MID.search(sentence):
+        return 0
+    if "provides necessary background" in lowered:
+        return 0
+    if "sets the stage" in lowered:
+        return 0
+    if re.search(r"(?:analysis|intro|introduction|thesis|abstract|summary|"
+                 r"conclusion|methods|results|discussion|references)\s+"
+                 r"comes\s+(?:at the end|first|last)\b", lowered):
+        return 0
+    if _COUNTED_DISEASE.search(sentence):
+        return 0
+    if _YEAR_START.search(sentence):
+        return 0
+    if _OTHER_START.search(sentence):
+        return 0
+    if _SOME_START.search(sentence):
+        return 0
+    if _THEM_MID.search(sentence):
+        return 0
+    if _YOUR_MID.search(sentence):
+        return 0
+    if "uses a version of" in lowered or "use a version of" in lowered:
+        return 0
+    if "is designed to" in lowered:
+        return 0
+    if _BELOW_PTR.search(sentence):
+        return 0
+    if _YEAR_PAREN.search(sentence):
+        return 0
+    if _KEYWORD_RUN.search(sentence):
+        return 0
+    if _CREDITS.search(sentence):
+        return 0
+    if _PUNCT_START.search(sentence):
+        return 0
+    if _PRON_START.search(sentence):
+        return 0
+    if _WE_START.search(sentence):
+        return 0
+    if "number of cases" in lowered:
+        return 0
+    if _NEWS_EVENT.search(sentence):
+        return 0
+    if _VAGUE_KIND.search(sentence):
+        return 0
+    if _PURPOSES.search(sentence):
+        return 0
+    if _IN_YOUR.search(sentence):
+        return 0
+    if _is_instruction(sentence):
+        return 0
+    if _LINKER_START.search(sentence):
+        return 1 if coherence else 0
     if any(b in lowered for b in SHOW_BOOSTERS):
+        if coherence and not _LINKER_MID.search(lowered):
+            return 0
+        if genre and not _GENRE_SIGNAL.search(lowered):
+            return 0
         return 2
     return 1
 
@@ -616,11 +1099,16 @@ _CHUNK_DIRT_LIMIT = 3
 
 
 def select_showing_example(query_base: str, genre: str, discipline: str,
-                           rule_text: str) -> dict:
+                           rule_text: str, genre_boost: bool = False,
+                           coherence_boost: bool = False) -> dict:
     """One cleaned example sentence that SHOWS the thing, with provenance.
 
     Prefers showing passages from discipline-matching books, never repeats
-    the rule text, and falls back to NO_VERIFIED_EXAMPLE with nulls.
+    the rule text, and falls back to NO_VERIFIED_EXAMPLE with nulls. With
+    genre_boost (genre modules), sentences naming genre parts outrank
+    generic ones; definitions, meta-talk, glossary frames, mundane-name
+    filler, hedges, instructions and (outside coherence) linker starts
+    stay at zero either way.
     """
     docs, metas = _query_guides(f"{query_base} example {genre}", n_results=8)
     cands = []
@@ -629,13 +1117,21 @@ def select_showing_example(query_base: str, genre: str, discipline: str,
         book = _book_score(meta.get("source"), discipline)
         chunk_ok = _artifact_count(doc or "") < _CHUNK_DIRT_LIMIT
         for sent in clean_sentences(doc):
-            if len(sent) < 35 or sent.endswith("?") or _overlaps_rule(sent, rule_text):
+            if (len(sent) < 35 or sent.endswith("?")
+                    or _overlaps_rule(sent, rule_text)
+                    or not re.search(r"[.!?][\"']?$", sent)):
                 continue
-            cands.append({"sent": sent, "show": _show_score(sent), "book": book,
+            show = _show_score(sent, coherence=coherence_boost,
+                               genre=genre_boost)
+            if genre_boost and show >= 1 and _GENRE_SIGNAL.search(sent.lower()):
+                show += 2
+            cands.append({"sent": sent, "show": show, "book": book,
                           "rank": rank, "meta": meta, "chunk_ok": chunk_ok,
                           "dirty": _artifact_count(sent) > 0})
-    pool = ([c for c in cands if c["show"] >= 1 and c["chunk_ok"]]
-            or [c for c in cands if c["show"] >= 1] or cands)
+    pool = ([c for c in cands if c["show"] >= 1 and c["chunk_ok"]
+             and not c["dirty"]]
+            or [c for c in cands if c["show"] >= 1 and not c["dirty"]]
+            or [c for c in cands if c["show"] >= 1])
     if not pool:
         return {"text": NO_VERIFIED_EXAMPLE, "source": None,
                 "chapter": None, "license": None}
@@ -696,7 +1192,7 @@ def genre_module(discipline: str) -> dict:
     genre = DISCIPLINE_GENRES[discipline]
     return {"id": "genre", "title": (genre + "s").capitalize(),
             "skill": "Academic tone", "required_level": 3,
-            "query": f"{genre} introduction opening"}
+            "query": f"{genre} introduction opening draft"}
 
 
 def discipline_modules(discipline: str) -> list[dict]:
@@ -875,7 +1371,10 @@ def build_lesson(discipline: str, module_id: str) -> dict:
     art = "an" if genre == "essay" else "a"
     if authored:
         idea_text = idea_text.format(genre=genre, topic=topic, art=art, Art=art.capitalize())
-    example = select_showing_example(module["query"], genre, discipline, idea_text)
+    example = select_showing_example(module["query"], genre, discipline,
+                                       idea_text,
+                                       genre_boost=(module["id"] == "genre"),
+                                       coherence_boost=(module["id"] == "coherence-flow"))
     books = []
     if idea_meta and idea_meta.get("source"):
         books.append(resolve_book(idea_meta["source"], idea_meta.get("license")))

@@ -45,8 +45,8 @@ def flags(kind, text):
         out.append("CHAPTER_REF")
     if re.search(r"\b(\w+(?:\s+\w+){1,2})\s+\1\b", text, re.IGNORECASE):
         out.append("REPEAT_RUN")
-    if re.search(r"\b(?![aAI]\b)[A-Za-z]\s+[A-Za-z]", text):
-        out.append("SPACING_DMG")
+    if main._artifact_count(text) > 0:
+        out.append("DIRTY")
     if kind == "example":
         low = text.lower()
         if any(t in low for t in ("quiz", "syllabus")):
