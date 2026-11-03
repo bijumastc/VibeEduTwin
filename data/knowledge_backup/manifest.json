@@ -1,0 +1,26 @@
+{
+  "books": [
+    {
+      "filename": "openstax-writing-guide.pdf",
+      "title": "Writing Guide with Handbook (OpenStax)",
+      "source_url": "https://openstax.org/details/books/writing-guide",
+      "license": "CC BY 4.0",
+      "subject": "academic-writing"
+    },
+    {
+      "filename": "oregon-writes-open-writing-text.pdf",
+      "title": "Oregon Writes Open Writing Text",
+      "source_url": "https://open.umn.edu/opentextbooks/textbooks/oregon-writes-open-writing-text",
+      "license": "CC BY",
+      "subject": "academic-writing"
+    },
+    {
+      "filename": "who-teaches-writing.pdf",
+      "title": "Who Teaches Writing (Oklahoma State University)",
+      "source_url": "https://open.umn.edu/opentextbooks/textbooks/1144",
+      "license": "CC BY",
+      "subject": "academic-writing"
+    }
+  ],
+  "allowed_license_prefixes": ["CC BY", "CC-BY", "CC0", "Public Domain"]
+}

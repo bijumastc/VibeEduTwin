@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+chroma_db/
+.chroma_cache/
+*.db
+*.log
+data/knowledge/*.pdf
+.env
+
+node_modules/
+frontend/dist/
