@@ -365,6 +365,19 @@ input[type="text"] {
   color: var(--accent-dark);
 }
 
+.linklike {
+  display: block;
+  margin: 16px auto 0;
+  border: none;
+  background: none;
+  color: var(--accent-dark);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  min-height: 44px;
+}
+
 /* Misc */
 .error {
   background: #fdecec;

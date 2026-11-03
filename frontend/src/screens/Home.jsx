@@ -38,6 +38,7 @@ export default function Home({ go }) {
           <p className="muted">Your twin will find your weakest skill.</p>
         </div>
         <button className="btn" onClick={() => go('write')}>Write now</button>
+        <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
       </div>
     );
   }
@@ -60,6 +61,7 @@ export default function Home({ go }) {
       <button className="btn" onClick={() => go(GOES_TO_WRITE.has(weakest) ? 'write' : 'practice')}>
         Start
       </button>
+      <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
     </div>
   );
 }

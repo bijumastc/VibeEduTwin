@@ -17,7 +17,9 @@ Endpoints:
   POST /scaffold/help         one rung up the ladder (question/hint/excerpt)
   POST /scaffold/show         "Show me now": jump to the book excerpt
   POST /scaffold/rewrite      accept the learner's rewrite
-  POST /teacher/practice-sets  generate a set from plain language + verify it
+  POST /teacher/practice-sets  generate a set from library excerpts + verify it
+  POST /teacher/publish        publish a set into learners' Practice
+  GET  /events                 latest audit rows for the How-it-decided panel
 
 Every endpoint writes to the event log (learner_store), so the app can
 later show "How it decided". Skill scoring is simple heuristic logic for
@@ -145,6 +147,15 @@ class LevelCheckIn(BaseModel):
 
 class TeacherSetIn(BaseModel):
     request: str = Field(min_length=1, description="Plain-language practice request")
+    note: str = Field(default="", description="Optional one-line steer for regenerate")
+
+
+class TeacherPublishIn(BaseModel):
+    request: str = ""
+    skill: str
+    level: int
+    discipline: str | None = None
+    items: list[dict]
 
 
 class TwinAskIn(BaseModel):
@@ -1082,59 +1093,333 @@ def check_answer(item: dict, given: str) -> bool:
     return (given or "").strip().lower() == item["answer"].strip().lower()
 
 
-# --- Verifier for teacher-generated sets ----------------------------------------------
-def verify_practice_set(items: list[dict]) -> list[str]:
-    """Return a list of problems (empty = passed). Rules are deliberately strict."""
-    errors: list[str] = []
-    if not items:
-        return ["Practice set is empty."]
-    seen_ids: set[str] = set()
-    for i, item in enumerate(items):
-        where = f"item {i + 1}"
-        if not isinstance(item, dict):
-            errors.append(f"{where}: not an object.")
-            continue
-        item_id = item.get("id", "")
-        if not item_id or item_id in seen_ids:
-            errors.append(f"{where}: missing or duplicate id.")
-        seen_ids.add(item_id)
-        if not (item.get("prompt") or "").strip():
-            errors.append(f"{where}: empty prompt.")
-        if item.get("type") not in ("mcq", "order"):
-            errors.append(f"{where}: type must be 'mcq' or 'order'.")
-        options = item.get("options") or []
-        if len(options) < 2:
-            errors.append(f"{where}: need at least 2 options.")
-        answer = (item.get("answer") or "").strip()
-        if not answer:
-            errors.append(f"{where}: missing answer.")
-        elif item.get("type") == "mcq" and not any(
-                str(o).strip().lower().startswith(answer.lower()) for o in options):
-            errors.append(f"{where}: answer '{answer}' matches no option.")
-        if not (item.get("explanation") or "").strip():
-            errors.append(f"{where}: missing explanation (learners need feedback).")
-    return errors
+# --- Unified Verifier (checklist: docs/plan.md) ---------------------------------------
+# Single gate before the learner sees anything. Replies only in JSON:
+# {"pass": bool, "failed": [rule ids], "fix": one-line fix or ""}.
+VERIFY_FIXES = {
+    "not-empty": "Fill in the missing text.",
+    "non-empty": "Add at least one item.",
+    "unique-id": "Give every item a non-empty, unique id.",
+    "no-generic-praise": "Remove generic praise; name the exact improvement instead.",
+    "no-invented-examples": "Use an excerpt from the knowledge base and cite its source.",
+    "valid-type": "Set type to 'mcq' or 'order'.",
+    "min-options": "Add at least 2 options.",
+    "has-answer": "Add the answer.",
+    "answer-matches-option": "Make the answer match one option.",
+    "has-explanation": "Add an explanation (learners need feedback).",
+}
+
+# Structural subset for the curated bank (exempt from no-invented-examples).
+PRACTICE_STRUCTURAL_RULES = ["unique-id", "not-empty", "valid-type",
+                             "min-options", "has-answer",
+                             "answer-matches-option", "has-explanation"]
+
+_PRACTICE_RULE_MESSAGES = {
+    "unique-id": "missing or duplicate id.",
+    "not-empty": "empty prompt.",
+    "valid-type": "type must be 'mcq' or 'order'.",
+    "min-options": "need at least 2 options.",
+    "has-answer": "missing answer.",
+    "has-explanation": "missing explanation (learners need feedback).",
+    "no-invented-examples": "missing book source (every example must come from the knowledge base).",
+}
 
 
-def generate_practice_set(request_text: str) -> list[dict]:
-    """Build a practice set from a plain-language request (template logic now).
+def _quoted_spans(text: str) -> list[str]:
+    """Double- and single-quoted spans, without the quote marks."""
+    spans = re.findall(r'"([^"]+)"', text or "")
+    spans += re.findall(r"'([^']+)'", text or "")
+    return spans
 
-    Muse Spark will replace this body later; the verifier below stays the same.
+
+def _reply_has_invented_example(reply: str, message: str | None) -> bool:
+    """True when the reply quotes a complete sentence it should not have.
+
+    Allowed quotes: the learner's own words, sentence starters with ___,
+    passages marked with ... . Anything else quoted with sentence-ending
+    punctuation is an invented example: book examples must arrive as
+    excerpts with their source instead.
     """
-    lowered = request_text.lower()
-    skill = next((s for s in SKILLS if s.lower() in lowered), "Paragraphing")
-    base = practice_items_for(skill, 1)
-    count = 3 if any(w in lowered for w in ["three", "3"]) else 2
-    items = []
-    for i, item in enumerate(base[:count]):
-        items.append({
-            "id": f"t{i + 1}",
-            "type": item["type"],
-            "prompt": f"[{skill}] {item['prompt']}",
-            "options": list(item["options"]),
-            "answer": item["answer"],
-            "explanation": item["explanation"],
-        })
+    learner = message or ""
+    for span in _quoted_spans(reply or ""):
+        if not re.search(r"[.!?]", span):
+            continue  # bare words like 'very' are not examples
+        if "___" in span or "..." in span:
+            continue
+        core = span.strip().rstrip(".!?").strip()
+        if core and (span.strip() in learner or core in learner):
+            continue  # quoting the learner's own words
+        return True
+    return False
+
+
+def _verify_twin_reply_rules(reply: str, message: str | None) -> list[str]:
+    if not (reply or "").strip():
+        return ["not-empty"]
+    failed = []
+    if _has_generic_praise(reply):
+        failed.append("no-generic-praise")
+    if _reply_has_invented_example(reply, message):
+        failed.append("no-invented-examples")
+    return failed
+
+
+def _verify_practice_item_rules(item: dict) -> list[str]:
+    if not isinstance(item, dict):
+        return ["not-empty"]
+    failed = []
+    if not (item.get("prompt") or "").strip():
+        failed.append("not-empty")
+    if item.get("type") not in ("mcq", "order"):
+        failed.append("valid-type")
+    options = item.get("options") or []
+    if len(options) < 2:
+        failed.append("min-options")
+    answer = (item.get("answer") or "").strip()
+    if not answer:
+        failed.append("has-answer")
+    elif item.get("type") == "mcq" and not any(
+            str(o).strip().lower().startswith(answer.lower()) for o in options):
+        failed.append("answer-matches-option")
+    if not (item.get("explanation") or "").strip():
+        failed.append("has-explanation")
+    if not (item.get("source") or "").strip():
+        failed.append("no-invented-examples")
+    return failed
+
+
+def verify(kind: str, payload, context: dict | None = None,
+           rules: list[str] | None = None) -> dict:
+    """Run the docs/plan.md checklist. Replies only in JSON.
+
+    kind: "twin_reply" | "practice_item" | "practice_set".
+    context: {"message": learner text} for twin replies.
+    rules: optional subset of rule ids (used for the curated bank).
+    """
+    context = context or {}
+    if kind == "twin_reply":
+        failed = [r for r in _verify_twin_reply_rules(
+            payload, context.get("message")) if rules is None or r in rules]
+    elif kind == "practice_item":
+        failed = [r for r in _verify_practice_item_rules(payload)
+                  if rules is None or r in rules]
+    elif kind == "practice_set":
+        failed = []
+        if not payload:
+            failed = ["non-empty"]
+        else:
+            seen_ids: set[str] = set()
+            for i, item in enumerate(payload):
+                item_id = item.get("id", "") if isinstance(item, dict) else ""
+                if (rules is None or "unique-id" in rules) and (
+                        not item_id or item_id in seen_ids):
+                    failed.append(f"item {i + 1}: unique-id")
+                seen_ids.add(item_id)
+                for r in _verify_practice_item_rules(item):
+                    if rules is None or r in rules:
+                        failed.append(f"item {i + 1}: {r}")
+    else:
+        raise ValueError(f"Unknown verify kind: {kind}")
+    passed = not failed
+    first = failed[0].split(": ")[-1] if failed else ""
+    return {"pass": passed, "failed": failed,
+            "fix": "" if passed else VERIFY_FIXES[first]}
+
+
+def _practice_failure_message(items: list, entry: str) -> str:
+    """Map a "item N: rule" failure back to the legacy human message."""
+    where, _, rule = entry.partition(": ")
+    if rule == "answer-matches-option":
+        try:
+            answer = items[int(where.split()[1]) - 1].get("answer", "")
+        except (IndexError, ValueError, AttributeError):
+            answer = ""
+        return f"{where}: answer '{answer}' matches no option."
+    return f"{where}: {_PRACTICE_RULE_MESSAGES[rule]}"
+
+
+def verify_practice_set(items: list[dict]) -> list[str]:
+    """Return a list of problems (empty = passed). Rules are deliberately strict.
+
+    Structural checklist only (legacy interface); generated sets go through
+    verify("practice_set") with the full checklist instead.
+    """
+    result = verify("practice_set", items, rules=PRACTICE_STRUCTURAL_RULES)
+    messages = []
+    for entry in result["failed"]:
+        if entry == "non-empty":
+            messages.append("Practice set is empty.")
+        else:
+            messages.append(_practice_failure_message(items, entry))
+    return messages
+
+
+# First keyword match wins, so specific phrases come before bare words
+# ("topic sentence" must beat "sentence").
+TEACHER_SKILL_KEYWORDS = [
+    ("Paragraphing", ["topic sentence", "paragraph", "coherence", "unity", "developing"]),
+    ("Argument", ["thesis", "argument", "claim", "evidence"]),
+    ("Using sources", ["citation", "cite", "reference", "sources", "plagiarism", "bibliography"]),
+    ("Academic tone", ["tone", "formal", "hedging"]),
+    ("Sentence structure", ["sentence structure", "flow", "clause", "fragment", "run-on", "sentence"]),
+    ("Grammar", ["grammar", "tense", "subject-verb", "article", "punctuation", "verb"]),
+    ("Vocabulary", ["vocabulary", "word choice", "synonym", "linker"]),
+]
+
+TEACHER_SKILL_LABELS = {
+    "Paragraphing": "paragraphs", "Argument": "arguments",
+    "Using sources": "using sources", "Academic tone": "academic tone",
+    "Sentence structure": "sentence structure", "Grammar": "grammar",
+    "Vocabulary": "vocabulary",
+}
+
+TEACHER_EXPLANATIONS = {
+    "Paragraphing": "Main idea first, details next, closing last.",
+    "Argument": "Claim first, then the reason that proves it.",
+    "Using sources": "The source is named before the borrowed idea.",
+    "Academic tone": "Calm, exact words carry the point.",
+    "Sentence structure": "Ideas join in reason order.",
+    "Grammar": "Every sentence keeps subject and verb in agreement.",
+    "Vocabulary": "One exact word does the work.",
+}
+
+# "Social sciences" must be checked before "science" (substring).
+TEACHER_DISCIPLINE_WORDS = [
+    ("Social Sciences", ["social sciences"]),
+    ("Sciences", ["sciences", "science"]),
+    ("Technology", ["technology", "technical", "engineering"]),
+    ("Medicine", ["medicine", "medical", "health", "nursing"]),
+    ("Arts & Humanities", ["arts & humanities", "humanities", "arts", "history", "literature"]),
+    ("Commerce & Management", ["commerce & management", "commerce", "management", "business"]),
+]
+
+
+def parse_teacher_request(request_text: str) -> dict:
+    """Pull skill, count (1-10), level (1-5) and discipline from a request."""
+    lowered = (request_text or "").lower()
+    skill = next((s for s, kws in TEACHER_SKILL_KEYWORDS
+                  if any(k in lowered for k in kws)), "Paragraphing")
+    count_match = re.search(r"(\d+)\s*(practice\s+)?(items?|questions?)", lowered)
+    count = max(1, min(10, int(count_match.group(1)))) if count_match else 3
+    level_match = re.search(r"level\s*([1-5])", lowered)
+    level = int(level_match.group(1)) if level_match else 1
+    discipline = next((d for d, words in TEACHER_DISCIPLINE_WORDS
+                       if any(w in lowered for w in words)), None)
+    return {"skill": skill, "count": count, "level": level, "discipline": discipline}
+
+
+def _excerpt_sentences(doc: str, max_n: int = 12) -> list[str]:
+    """Sentences of one excerpt, preferring substantial ones."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", (doc or "").strip())]
+    parts = [p for p in parts if p]
+    long = [p for p in parts if len(p) >= 25]
+    return (long if len(long) >= 2 else parts)[:max_n]
+
+
+def _teacher_source(meta: dict) -> tuple:
+    """(source, chapter, license) provenance for a generated item."""
+    return meta.get("source"), meta.get("chapter"), meta.get("license")
+
+
+def _teacher_explanation(skill: str, meta: dict) -> str:
+    cite = meta.get("source") or "unknown source"
+    if meta.get("chapter"):
+        cite += f", {meta['chapter']}"
+    return f"{TEACHER_EXPLANATIONS[skill]} From {cite}."
+
+
+def _teacher_order_item(num: int, sentences: list[str], meta: dict, skill: str) -> dict:
+    """Order-the-paragraph item from excerpt sentences in guide order."""
+    window = sentences[:4]
+    n = len(window)
+    numbered = " ".join(f"{i + 1}) '{s}'" for i, s in enumerate(window))
+    correct = ",".join(str(i + 1) for i in range(n))
+    rev = ",".join(str(n - i) for i in range(n))
+    rot = ",".join(str((i + 1) % n + 1) for i in range(n))
+    options = []
+    for order in (correct, rev, rot):
+        if order not in options:
+            options.append(order)
+    options = options[num % len(options):] + options[:num % len(options)]
+    source, chapter, license = _teacher_source(meta)
+    return {"id": f"t{num + 1}", "type": "order",
+            "prompt": f"Put the paragraph in order. Sentences: {numbered}",
+            "options": options, "answer": correct,
+            "explanation": _teacher_explanation(skill, meta),
+            "source": source, "chapter": chapter, "license": license}
+
+
+def _teacher_mcq_item(num: int, correct: str, distractors: list[str],
+                      meta: dict, skill: str) -> dict:
+    """Recognition item: the guide sentence among other excerpts' sentences."""
+    options = [correct, *distractors[:3]]
+    options = options[(num + 1) % len(options):] + options[:(num + 1) % len(options)]
+    letters = "ABCD"[:len(options)]
+    lettered = [f"{letter}) {s}" for letter, s in zip(letters, options)]
+    source, chapter, license = _teacher_source(meta)
+    return {"id": f"t{num + 1}", "type": "mcq",
+            "prompt": f"Which sentence gives advice on {TEACHER_SKILL_LABELS[skill]}?",
+            "options": lettered, "answer": letters[options.index(correct)],
+            "explanation": _teacher_explanation(skill, meta),
+            "source": source, "chapter": chapter, "license": license}
+
+
+def generate_practice_set(request_text: str, note: str = "") -> list[dict]:
+    """Build items ONLY from ChromaDB excerpts; [] when nothing usable exists.
+
+    Order items reuse an excerpt's own sentence order; mcq items pair one
+    excerpt sentence with sentences from other topics' excerpts. The optional
+    note steers retrieval. Option order rotates deterministically by position.
+    """
+    parsed = parse_teacher_request(request_text)
+    skill, count = parsed["skill"], parsed["count"]
+    extra = f" {(note or '').strip()}" if (note or "").strip() else ""
+    docs, metas = _query_guides(f"{skill} writing{extra}", n_results=count + 3)
+    pool = [(d, m or {}) for d, m in zip(docs, metas) if (d or "").strip()]
+    if not pool:
+        return []
+    others = [s for s in SKILLS if s != skill][:2]
+    dpool: list[str] = []
+    for other in others:
+        other_docs, _ = _query_guides(f"{other} writing{extra}", n_results=2)
+        for doc in other_docs:
+            dpool.extend(_excerpt_sentences(doc))
+    items: list[dict] = []
+    seen_prompts: set[str] = set()
+    use_count = [0] * len(pool)
+    idx = guard = 0
+    while len(items) < count and guard < count * 4:
+        guard += 1
+        j = idx % len(pool)
+        idx += 1
+        sentences = _excerpt_sentences(pool[j][0])
+        if len(sentences) < 2:
+            continue
+        off = (use_count[j] * 2) % len(sentences)
+        use_count[j] += 1
+        window = (sentences[off:] + sentences[:off])[:4]
+        meta = pool[j][1]
+        item = None
+        if len(items) % 2 == 0:
+            item = _teacher_order_item(len(items), window, meta, skill)
+        else:
+            distractors = []
+            for s in dpool:
+                if s != window[0] and s not in distractors:
+                    distractors.append(s)
+                if len(distractors) == 3:
+                    break
+            if len(distractors) >= 2:
+                item = _teacher_mcq_item(len(items), window[0], distractors, meta, skill)
+            else:
+                item = _teacher_order_item(len(items), window, meta, skill)
+        if item is None:
+            continue
+        # Mcq prompts repeat by design; tell them apart by the correct sentence.
+        key = item["prompt"] if item["type"] == "order" else item["prompt"] + "|" + window[0]
+        if key not in seen_prompts:
+            seen_prompts.add(key)
+            items.append(item)
     return items
 
 
@@ -1373,24 +1658,40 @@ def post_scaffold_rewrite(data: ScaffoldRewriteIn):
 def get_practice(learner_id: int):
     """Practise step: a short set for the weakest skill and level (no answers).
 
-    Items use examples from the learner's discipline.
+    A published teacher set wins when one matches skill + level (+ discipline);
+    otherwise items come from the bank, using the learner's discipline.
     """
     learner = store.get_learner(learner_id)
     if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     discipline = learner.get("discipline") or "Sciences"
     skill, level = weakest_skill(latest_scores(learner_id))
-    items = practice_items_for(skill, level, discipline)
+    published = store.get_teacher_set(skill, level, discipline)
+    if published:
+        items = [it for it in published["items"]
+                 if verify("practice_item", it)["pass"]]
+        if len(items) < len(published["items"]):
+            store.log_event(learner_id, "Practise", "twin", "verify-items",
+                            f"dropped {len(published['items']) - len(items)} failed items")
+        if not items:  # every published item failed -> fall back to the bank
+            published = None
+    if not published:
+        items = [it for it in practice_items_for(skill, level, discipline)
+                 if verify("practice_item", it,
+                           rules=PRACTICE_STRUCTURAL_RULES)["pass"]]
     set_id = uuid.uuid4().hex[:8]
     ISSUED_SETS[set_id] = {"learner_id": learner_id, "skill": skill,
                            "level": level, "discipline": discipline,
+                           "published": published is not None,
+                           "items": items,
                            "answers": {it["id"]: it["answer"] for it in items}}
     public = [{k: v for k, v in it.items() if k not in ("answer", "variants")}
               for it in items]
     store.log_event(learner_id, "Practise", "twin", "get_practice",
                     f"set_id={set_id} skill={skill} level={level} items={len(items)}")
     return {"set_id": set_id, "learner_id": learner_id, "skill": skill,
-            "level": level, "discipline": discipline, "items": public}
+            "level": level, "discipline": discipline,
+            "published": published is not None, "items": public}
 
 
 @app.post("/practice/answers")
@@ -1400,7 +1701,8 @@ def post_answers(data: PracticeAnswersIn):
     if issued is None or issued["learner_id"] != data.learner_id:
         raise HTTPException(status_code=404, detail="Unknown or foreign set_id")
     skill = issued["skill"]
-    items = practice_items_for(skill, issued["level"], issued.get("discipline"))
+    items = issued.get("items") or practice_items_for(
+        skill, issued["level"], issued.get("discipline"))
     details: list[dict] = []
     correct = 0
     for item in items:
@@ -1512,12 +1814,38 @@ def get_independence(learner_id: int):
 
 @app.post("/teacher/practice-sets")
 def post_teacher_set(data: TeacherSetIn):
-    """Generate a practice set from plain language; return it only if verified."""
-    items = generate_practice_set(data.request)
-    errors = verify_practice_set(items)
-    if errors:
-        return {"passed": False, "errors": errors, "items": []}
-    return {"passed": True, "errors": [], "items": items}
+    """Generate items from library excerpts; report the Verifier result."""
+    parsed = parse_teacher_request(data.request)
+    items = generate_practice_set(data.request, data.note)
+    if not items:
+        errors = ["No usable excerpts in the library for this request."]
+    else:
+        verdict = verify("practice_set", items)
+        errors = [_practice_failure_message(items, e) for e in verdict["failed"]]
+    return {"passed": not errors, "errors": errors, "items": items,
+            "skill": parsed["skill"], "level": parsed["level"],
+            "discipline": parsed["discipline"]}
+
+
+@app.post("/teacher/publish")
+def post_teacher_publish(data: TeacherPublishIn):
+    """Verify again and publish; published sets appear in learners' Practice."""
+    verdict = verify("practice_set", data.items)
+    if not verdict["pass"]:
+        detail = "; ".join(
+            "Practice set is empty." if e == "non-empty"
+            else _practice_failure_message(data.items, e)
+            for e in verdict["failed"])
+        raise HTTPException(status_code=400, detail=detail)
+    if data.skill not in SKILLS:
+        raise HTTPException(status_code=400, detail="Unknown skill")
+    if data.level not in (1, 2, 3, 4, 5):
+        raise HTTPException(status_code=400, detail="Level must be 1-5")
+    if data.discipline is not None and data.discipline not in store.DISCIPLINES:
+        raise HTTPException(status_code=400, detail="Unknown discipline")
+    set_id = store.save_teacher_set(data.skill, data.level, data.discipline,
+                                    data.items, data.request)
+    return {"ok": True, "set_id": set_id}
 
 
 # --- Verifier for twin replies ----------------------------------------------------------
@@ -1536,14 +1864,18 @@ def _has_generic_praise(text: str) -> str | None:
     return None
 
 
-def verify_twin_reply(reply: str) -> list[str]:
+def verify_twin_reply(reply: str, message: str | None = None) -> list[str]:
     """Checklist for twin replies. Return problems (empty = passed)."""
-    errors: list[str] = []
-    if not (reply or "").strip():
-        return ["Reply is empty."]
-    found = _has_generic_praise(reply)
-    if found:
-        errors.append(f"No generic praise: reply contains '{found}'.")
+    result = verify("twin_reply", reply, {"message": message})
+    errors = []
+    for rule in result["failed"]:
+        if rule == "not-empty":
+            errors.append("Reply is empty.")
+        elif rule == "no-generic-praise":
+            found = _has_generic_praise(reply)
+            errors.append(f"No generic praise: reply contains '{found}'.")
+        else:
+            errors.append("No invented examples: quote only the learner's words or book excerpts.")
     return errors
 
 
@@ -1680,6 +2012,15 @@ def get_drafts(learner_id: int):
     return {"learner_id": learner_id, "drafts": store.get_drafts(learner_id)}
 
 
+@app.get("/events")
+def get_events(learner_id: int, limit: int = 6):
+    """Latest audit rows for the 'How it decided' panel (at most 6 lines)."""
+    if store.get_learner(learner_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    return {"learner_id": learner_id,
+            "events": store.get_recent_events(learner_id, min(max(limit, 1), 6))}
+
+
 @app.post("/twin/ask")
 def post_twin_ask(data: TwinAskIn):
     """Bridge step: short scaffolded twin reply (template until Muse Spark lands)."""
@@ -1687,10 +2028,10 @@ def post_twin_ask(data: TwinAskIn):
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     weakest, _ = weakest_skill(latest_scores(data.learner_id))
     reply = twin_scaffold_reply(data.message, weakest)
-    errors = verify_twin_reply(reply)
-    if errors:  # never serve a reply that breaks the checklist
+    verdict = verify("twin_reply", reply, {"message": data.message})
+    if not verdict["pass"]:  # never serve a reply that breaks the checklist
         store.log_event(data.learner_id, "Bridge", "twin", "verify-reply",
-                        f"rejected reply: {errors}")
+                        f"rejected reply: {verdict['failed']}")
         reply = twin_safe_reply(data.message, weakest)
     store.log_event(data.learner_id, "Bridge", "twin", "scaffold-reply",
                     f"screen={data.screen} weakest={weakest}")

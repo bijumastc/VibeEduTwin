@@ -5,6 +5,7 @@ SQLite (learners.db) holds structured records:
   - skill_scores: skill name -> score snapshots over time
   - drafts: writing drafts plus the feedback given
   - event_log: audit trail of practice-loop steps (Write -> Diagnose -> ...)
+  - teacher_sets: published practice sets served in learners' Practice
 
 ChromaDB (./chroma_db) holds one collection per learner,
 named "learner_<id>_writing", so the twin can search past work.
@@ -13,6 +14,7 @@ Usage:
   python learner_store.py     # runs the sample test at the bottom
 """
 
+import json
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -62,6 +64,15 @@ CREATE TABLE IF NOT EXISTS event_log (
     agent TEXT NOT NULL,
     tool TEXT NOT NULL,
     result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS teacher_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill TEXT NOT NULL,
+    level INTEGER NOT NULL,
+    discipline TEXT,
+    items TEXT NOT NULL,
+    request TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 """
@@ -217,6 +228,47 @@ def get_scaffold_events(learner_id: int) -> list[dict]:
             (learner_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_recent_events(learner_id: int, limit: int = 6) -> list[dict]:
+    """Return the most recent audit rows (step, agent, tool, result) first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT step, agent, tool, result FROM event_log"
+            " WHERE learner_id = ? ORDER BY id DESC LIMIT ?",
+            (learner_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- Teacher sets ---------------------------------------------------------------
+def save_teacher_set(skill: str, level: int, discipline: str | None,
+                     items: list[dict], request_text: str) -> int:
+    """Publish a teacher set; returns the new set id. discipline None = all."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO teacher_sets (skill, level, discipline, items, request,"
+            " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (skill, level, discipline, json.dumps(items, ensure_ascii=False),
+             request_text, _utcnow()),
+        )
+        return cur.lastrowid
+
+
+def get_teacher_set(skill: str, level: int, discipline: str) -> dict | None:
+    """Newest set for a skill + level: discipline-specific wins over generic."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM teacher_sets WHERE skill = ? AND level = ?"
+            " AND (discipline IS NULL OR discipline = ?)"
+            " ORDER BY discipline IS NULL, id DESC LIMIT 1",
+            (skill, level, discipline),
+        ).fetchone()
+        if row is None:
+            return None
+        found = dict(row)
+        found["items"] = json.loads(found["items"])
+        return found
 
 
 # --- Writing samples (ChromaDB, one collection per learner) ----------------------

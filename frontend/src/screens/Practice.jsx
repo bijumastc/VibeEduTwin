@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, LeveledUp } from '../api.js';
+import HowItDecided from '../components/HowItDecided.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 
 // Practice: one item at a time, tap to answer, score at the end.
@@ -68,6 +69,7 @@ export default function Practice() {
           </div>
         ))}
         <button className="btn" onClick={load}>Practise again</button>
+        <HowItDecided refreshKey={result} />
         <button className="twin-fab" onClick={() => setTwinOpen(true)}>Ask my Twin</button>
         {twinOpen && <TwinPanel screen="practice" onClose={() => setTwinOpen(false)} />}
       </div>
@@ -78,7 +80,7 @@ export default function Practice() {
   return (
     <div>
       <h2>Practice: {set.skill}</h2>
-      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}{set.discipline ? ` · ${set.discipline}` : ''}</div>
+      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}{set.discipline ? ` · ${set.discipline}` : ''}{set.published ? ' · Teacher set' : ''}</div>
       <div className="card">
         <p>{item.prompt}</p>
       </div>

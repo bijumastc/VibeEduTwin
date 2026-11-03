@@ -47,6 +47,13 @@ export const api = {
   scaffoldRewrite: (attempt_id, text) => post('/scaffold/rewrite', { attempt_id, text }),
   independence: () => request(`/independence?learner_id=${LEARNER_ID}`),
   signup: (profile) => request('/learners', { method: 'POST', body: JSON.stringify(profile) }),
+  teacherGenerate: (requestText, note) => request('/teacher/practice-sets', {
+    method: 'POST', body: JSON.stringify({ request: requestText, note: note || '' }),
+  }),
+  teacherPublish: (payload) => request('/teacher/publish', {
+    method: 'POST', body: JSON.stringify(payload),
+  }),
+  events: () => request(`/events?learner_id=${LEARNER_ID}`),
   askTwin: (message, screen) => post('/twin/ask', { message, screen }),
 };
 

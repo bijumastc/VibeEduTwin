@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api.js';
+import HowItDecided from '../components/HowItDecided.jsx';
 import LearnCard from '../components/LearnCard.jsx';
 import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
@@ -86,6 +87,7 @@ export default function Write({ go }) {
             </div>
           )}
           <button className="btn secondary" onClick={reset}>Write another</button>
+          <HowItDecided refreshKey={result} />
         </>
       )}
 

@@ -4,6 +4,7 @@ import Write from './screens/Write.jsx';
 import Learn from './screens/Learn.jsx';
 import Practice from './screens/Practice.jsx';
 import MyGrowth from './screens/MyGrowth.jsx';
+import Teacher from './screens/Teacher.jsx';
 import BottomNav from './components/BottomNav.jsx';
 
 // Five tabs, no router needed: simple state switch.
@@ -26,6 +27,7 @@ export default function App() {
         {tab === 'learn' && <Learn go={go} />}
         {tab === 'practice' && <Practice />}
         {tab === 'growth' && <MyGrowth go={go} />}
+        {tab === 'teacher' && <Teacher go={go} />}
       </main>
       <BottomNav tab={tab} go={go} />
     </div>
