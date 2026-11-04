@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api } from '../api.js';
 import CompactLesson from '../components/CompactLesson.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
+import HowScored from '../components/HowScored.jsx';
 import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 import VoiceButton from '../components/VoiceButton.jsx';
@@ -65,6 +66,7 @@ export default function Write({ go }) {
           <div className="card">
             <SkillBars scores={result.scores} weakest={result.weakest} levels={result.level_changes} />
           </div>
+          <HowScored />
           <div className="card accent-soft">
             <div className="card-title">Your twin says</div>
             <p>{result.twin_note}</p>

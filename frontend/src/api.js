@@ -56,6 +56,8 @@ export const api = {
   }),
   events: () => request(`/events?learner_id=${LEARNER_ID}`),
   askTwin: (message, screen) => post('/twin/ask', { message, screen }),
+  rubric: () => request('/rubric'),
+  config: () => request('/config'),
   voiceSocketUrl: (learnerId) =>
     `${API_URL.replace(/^http/, 'ws')}/ws/transcribe?learner_id=${learnerId || LEARNER_ID}`,
 };

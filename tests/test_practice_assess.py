@@ -161,3 +161,53 @@ def test_practice_assessment_ui_strings():
     assert "go('learn')" in practice
     app = (ROOT / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")
     assert "<Practice go={go} />" in app
+
+
+# --- Retry bounds: regen resends only failed items, then templates -------------
+def test_practice_batch_retries_only_failed_items(tmp_db, monkeypatch):
+    import json
+
+    replies = [
+        json.dumps([{"id": "a1", "status": "ok",
+                     "strength": "You spotted it: \"Rivers run fast.\".",
+                     "problem": "", "quote": "Rivers run fast.",
+                     "next_action": "Keep going.", "score": 2}]),
+        json.dumps([{"id": "a2", "status": "ok", "strength": "",
+                     "problem": "Your order breaks the flow: "
+                                "\"Boats float high. Fish swim deep.\"",
+                     "quote": "Boats float high. Fish swim deep.",
+                     "next_action": "Start from the river.", "score": 1}])]
+    calls = []
+
+    def chat(messages):
+        calls.append(messages)
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", chat)
+    learner_id = _learner(tmp_db)
+    set_id = _issue(learner_id, [MCQ, ORDER])
+    scored = _score(learner_id, set_id, {"a1": "A", "a2": "3,2,1"})
+    assert len(calls) == 2
+    retry_text = calls[1][-1]["content"]
+    assert "id a2" in retry_text and "id a1" not in retry_text
+    by_id = {d["id"]: d for d in scored["details"]}
+    assert "You spotted it:" in by_id["a1"]["assessment"]["feedback"]
+    assert "Start from the river" in by_id["a2"]["assessment"]["feedback"]
+
+
+def test_practice_batch_exhausts_regens_then_templates(tmp_db, monkeypatch):
+    calls = []
+
+    def bad_chat(messages):
+        calls.append(messages)
+        return "nope"
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", bad_chat)
+    learner_id = _learner(tmp_db)
+    set_id = _issue(learner_id, [MCQ])
+    scored = _score(learner_id, set_id, {"a1": "A"})
+    assert len(calls) == 3  # 1 initial + 2 regens
+    got = scored["details"][0]["assessment"]
+    assert got["score"] == 2 and "Rivers run fast." in got["feedback"]

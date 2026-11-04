@@ -581,3 +581,39 @@ def test_scaffold_ui_strings():
         encoding="utf-8")
     assert "Working more independently" in growth
     assert "api.independence()" in growth
+
+
+# --- Retry bounds: 2 regens, then the fixed ladder -----------------------------
+def test_assessor_retries_twice_then_fixed_ladder(tmp_db, monkeypatch):
+    calls = []
+
+    def bad_chat(messages):
+        calls.append(messages)
+        return "nope"
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", bad_chat)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Plants need sun to grow tall.")
+    assert len(calls) == 3  # 1 initial + 2 regens
+    assert helped["step"] == "hint"  # L1 fixed ladder, no assessment
+    assert "assessment" not in helped
+
+
+def test_assessor_retry_success_is_used(tmp_db, monkeypatch):
+    replies = ["nope", _assess_reply()]
+    calls = []
+
+    def chat(messages):
+        calls.append(messages)
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", chat)
+    learner_id = _learner(tmp_db, {"Paragraphing": 25})
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Plants need sun to grow tall.")
+    assert len(calls) == 2
+    assert helped["step"] == "question"
+    assert helped["assessment"]["score"] == 1

@@ -1810,6 +1810,33 @@ def _copied_pattern(module_id: str, discipline: str, attempt: dict,
     return any(_overlaps_rule(text, ref) for ref in refs)
 
 
+def _assess_with_spark(learner_id: int, module_id: str, discipline: str,
+                       attempt: dict, text: str) -> dict | None:
+    """Spark verdict passing the assessor checklist, or None after regens."""
+    if _demo_mode() or _model_api_key() is None:
+        return None
+    failed = ["no-output"]
+    for _ in range(1 + SPARK_MAX_REGENS):
+        try:
+            raw = _spark_chat(_assessor_messages(
+                module_id, discipline, attempt, text))
+        except SparkError:
+            continue
+        fields = _parse_assessment(raw)
+        if fields is None:
+            continue
+        verdict = verify("assessor", {
+            "status": fields["status"],
+            "feedback": _assessment_feedback(fields), "attempt": text,
+            "quote": fields["quote"], "score": fields["score"]})
+        if verdict["pass"]:
+            return fields
+        failed = verdict["failed"]
+    store.log_event(learner_id, "Scaffold", "twin", "verify-assess",
+                    f"attempt rejected: {failed}")
+    return None
+
+
 def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
     """Assess one try: gates, Spark, verify, score. None means skip it."""
     module_id, discipline = attempt["module"], attempt["discipline"]
@@ -1820,15 +1847,10 @@ def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
         fields = {"status": "copied", "score": 0, "next_step": "retry",
                   "strength": "", "problem": "", "quote": "", "next_action": ""}
     else:
-        try:
-            raw = _spark_chat(_assessor_messages(
-                module_id, discipline, attempt, text))
-        except SparkError:
+        fields = _assess_with_spark(
+            learner_id, module_id, discipline, attempt, text)
+        if fields is None:
             return None
-        parsed = _parse_assessment(raw)
-        if parsed is None:
-            return None
-        fields = parsed
     feedback = _assessment_feedback(fields)
     verdict = verify("assessor", {"status": fields["status"], "feedback": feedback,
                                   "attempt": text, "quote": fields["quote"],
@@ -1879,7 +1901,10 @@ SPARK_PRACTICE_SYSTEM = (
 
 
 def _order_prompt_sentences(prompt: str) -> dict:
-    """{number: sentence} from '1) ...' runs (apostrophes inside are fine)."""
+    """{number: sentence} from '1) ...' runs (apostrophes inside are fine).
+
+    Letter runs ('[A] ...') map too, for the demo repair item.
+    """
     marks = [(m.start(), m.group(1))
              for m in re.finditer(r"(\d+)\)\s*'", prompt or "")]
     sents = {}
@@ -1888,6 +1913,12 @@ def _order_prompt_sentences(prompt: str) -> dict:
         seg = (prompt or "")[pos + len(num) + 3:end]
         cut = seg.rfind("'")
         sents[num] = seg[:cut].strip() if cut >= 0 else seg.strip()
+    letters = [(m.start(), m.group(1).upper())
+               for m in re.finditer(r"\[([A-Za-z])\]", prompt or "")]
+    for k, (pos, letter) in enumerate(letters):
+        end = letters[k + 1][0] if k + 1 < len(letters) else len(prompt or "")
+        seg = (prompt or "")[pos + 3:end].strip().rstrip(".")
+        sents[letter] = seg.strip()
     return sents
 
 
@@ -1896,11 +1927,13 @@ def _practice_answer_text(item: dict, given: str) -> str:
     given = (given or "").strip()
     if item["type"] == "mcq":
         for option in item["options"]:
-            if option.startswith(given.upper() + ")"):
-                return option.split(")", 1)[1].strip()
+            mark = re.match(r"\s*\(?([A-Za-z])\)", str(option))
+            if mark and given.upper() == mark.group(1).upper():
+                return str(option).split(")", 1)[1].strip()
         return ""
-    parts = [p.strip() for p in given.split(",") if p.strip()]
-    if not parts or any(not p.isdigit() for p in parts):
+    parts = [p.strip().upper() for p in given.split(",") if p.strip()]
+    if not parts or any(not (p.isdigit() or len(p) == 1 and p.isalpha())
+                        for p in parts):
         return ""
     sents = _order_prompt_sentences(item["prompt"])
     try:
@@ -1970,11 +2003,12 @@ def _practice_template_fields(choice: str, correct: bool, given: str) -> dict:
 
 
 def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
-                        answers: dict) -> dict:
+                        answers: dict, demo: bool = False) -> dict:
     """{item_id: assessment}: one Spark batch per module, templates for rest.
 
     Closed answers are checked exactly; write answers are free text scored
-    0-2. ok means correct (closed) or score 2 (write).
+    0-2. ok means correct (closed) or score 2 (write). Demo sets use the
+    fixed produce rule; no Spark runs in demo mode at all.
     """
     learner = store.get_learner(learner_id) or {}
     discipline = learner.get("discipline") or "Sciences"
@@ -1988,7 +2022,11 @@ def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
         module_id = item.get("module") or SKILL_MODULE.get(iskill)
         if item.get("type") == "write":
             text = (given or "").strip()
-            if len(text.split()) < 3 or module_id is None:
+            if demo and item.get("kind") == "produce":
+                fields = _demo_produce_fields(text)
+                judged[item["id"]] = (fields["score"] == 2, fields,
+                                      module_id, iskill)
+            elif len(text.split()) < 3 or module_id is None:
                 fields = _practice_write_template(text, topic_words)
                 judged[item["id"]] = (fields["score"] == 2, fields,
                                       module_id, iskill)
@@ -2013,32 +2051,42 @@ def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
     for ans in sparkable:
         by_module.setdefault(ans["module"], []).append(ans)
     for module_id, group in by_module.items():
-        try:
-            raw = _spark_chat(_practice_assess_messages(
-                group[0]["skill"], module_id, discipline, group))
-            data = json.loads(raw)
-            drafts = {d["id"]: d for d in data
-                      if isinstance(d, dict) and "id" in d} \
-                if isinstance(data, list) else {}
-        except (SparkError, ValueError):
-            drafts = {}
-        rejected = []
+        resolved: dict[str, dict] = {}
+        if _model_api_key() is not None and not _demo_mode():
+            for _ in range(1 + SPARK_MAX_REGENS):
+                pending = [a for a in group if a["id"] not in resolved]
+                if not pending:
+                    break
+                try:
+                    raw = _spark_chat(_practice_assess_messages(
+                        pending[0]["skill"], module_id, discipline, pending))
+                    data = json.loads(raw)
+                    drafts = {d["id"]: d for d in data
+                              if isinstance(d, dict) and "id" in d} \
+                        if isinstance(data, list) else {}
+                except (SparkError, ValueError):
+                    continue
+                for ans in pending:
+                    fields = _validate_assessment(drafts.get(ans["id"], {}))
+                    if fields is not None and (
+                            fields["status"] != "ok"
+                            or (ans["closed"]
+                                and (fields["score"] == 2) != ans["correct"])):
+                        fields = None
+                    if fields is not None:
+                        feedback = _assessment_feedback(fields)
+                        verdict = verify("assessor", {
+                            "status": "ok", "feedback": feedback,
+                            "attempt": ans["choice"],
+                            "quote": fields["quote"],
+                            "score": fields["score"]})
+                        if not verdict["pass"]:
+                            fields = None
+                    if fields is not None:
+                        resolved[ans["id"]] = fields
+        rejected = [a["id"] for a in group if a["id"] not in resolved]
         for ans in group:
-            fields = _validate_assessment(drafts.get(ans["id"], {}))
-            if fields is not None and (
-                    fields["status"] != "ok"
-                    or (ans["closed"]
-                        and (fields["score"] == 2) != ans["correct"])):
-                fields = None
-            if fields is not None:
-                feedback = _assessment_feedback(fields)
-                verdict = verify("assessor", {
-                    "status": "ok", "feedback": feedback,
-                    "attempt": ans["choice"], "quote": fields["quote"],
-                    "score": fields["score"]})
-                if not verdict["pass"]:
-                    rejected.append(ans["id"])
-                    fields = None
+            fields = resolved.get(ans["id"])
             if fields is None:
                 given = answers.get(ans["id"], "")
                 if ans["closed"]:
@@ -2048,7 +2096,8 @@ def _judge_practice_set(learner_id: int, skill: str, items: list[dict],
                     fields = _practice_write_template(ans["choice"], topic_words)
             ok = ans["correct"] if ans["closed"] else fields["score"] == 2
             judged[ans["id"]] = (ok, fields, module_id, ans["skill"])
-        if rejected:
+        if rejected and _model_api_key() is not None \
+                and not _demo_mode():
             store.log_event(learner_id, "Practise", "twin", "verify-assess",
                             f"items rejected: {rejected}")
     out = {}
@@ -2076,6 +2125,10 @@ def _mastery_move_up(learner_id: int, skill: str) -> bool:
     current = latest_scores(learner_id).get(skill, 0)
     if level_for_score(current) >= 5:
         return False
+    if _demo_mode():
+        # Earned and shown, but not saved: the improved paragraph must
+        # still compare Level 1 → 2.
+        return True
     store.save_skill_scores(
         learner_id, {skill: 20 * level_for_score(current)})
     return True
@@ -2165,14 +2218,17 @@ def score_using_sources(text: str) -> int:
     return _clamp(20 + 15 * min(5, hits))
 
 
+# Chatty words the tone scorer penalises; the demo produce rule forbids them.
+INFORMAL_WORDS = ["very", "really", "a lot", "thing", "things", "get", "got",
+                  "gonna", "wanna", "can't", "don't", "doesn't", "isn't"]
+
+
 def score_academic_tone(text: str) -> int:
     """Penalise chatty words, reward formal/hedging words."""
-    informal = ["very", "really", "a lot", "thing", "things", "get", "got",
-                "gonna", "wanna", "can't", "don't", "doesn't", "isn't"]
     formal = ["however", "moreover", "furthermore", "significant", "demonstrate",
               "indicate", "suggest", "therefore"]
     lowered = text.lower()
-    score = 70 - 6 * min(5, sum(lowered.count(w) for w in informal))
+    score = 70 - 6 * min(5, sum(lowered.count(w) for w in INFORMAL_WORDS))
     score += 4 * min(4, sum(lowered.count(w) for w in formal))
     return _clamp(score)
 
@@ -2189,8 +2245,253 @@ SCORERS = {
 
 
 def diagnose_text(text: str) -> dict[str, int]:
-    """Score text on all 7 skills with the current (heuristic) scorers."""
+    """Score text on all 7 skills with the heuristic scorers.
+
+    The heuristic Diagnoser: fallback when Spark is unavailable and sanity
+    check on Spark's levels.
+    """
     return {skill: SCORERS[skill](text) for skill in SKILLS}
+
+
+# --- Spark Diagnoser (fixed rubric in code; heuristic is the fallback) ---------
+# Level descriptors per skill, weak to strong. Fixed here, mirrored in the
+# "Rubric" section of docs/plan.md, sent to Spark with every diagnosis.
+DIAGNOSE_RUBRIC = {
+    "Grammar": [
+        "Frequent errors block meaning.",
+        "Many errors; meaning mostly clear.",
+        "Some errors; meaning clear.",
+        "Few, minor errors.",
+        "Rare, minor errors.",
+    ],
+    "Vocabulary": [
+        "Everyday words only, often repeated.",
+        "Mostly everyday words; a few academic words.",
+        "Some academic words, sometimes misused.",
+        "Academic and subject terms, mostly used correctly.",
+        "Precise academic and subject terms.",
+    ],
+    "Sentence structure": [
+        "Short or run-on sentences.",
+        "Mostly simple sentences; some joined correctly.",
+        "Mix of simple and compound sentences.",
+        "Varied sentences with few errors.",
+        "Varied, controlled sentences.",
+    ],
+    "Paragraphing": [
+        "No clear topic sentence; ideas listed.",
+        "Topic sentence present but vague.",
+        "Clear topic sentence with some support.",
+        "Clear topic sentence, relevant support, some links.",
+        "Clear topic sentence, support, and a link to the next idea.",
+    ],
+    "Argument": [
+        "Opinions without reasons.",
+        "A claim with one weak reason.",
+        "A claim with reasons but little evidence.",
+        "A claim with reasons and evidence.",
+        "Claim, evidence, and a counterpoint answered.",
+    ],
+    "Using sources": [
+        "No sources.",
+        "A source mentioned vaguely, no citation.",
+        "A source cited, format inconsistent.",
+        "Correct citation, some copied wording.",
+        "Correct paraphrase and citation.",
+    ],
+    "Academic tone": [
+        "Conversational.",
+        "Mostly conversational, a few formal phrases.",
+        "Mix of formal and informal.",
+        "Mostly formal and objective.",
+        "Formal, objective, and appropriately hedged.",
+    ],
+}
+
+SPARK_DIAGNOSE_SYSTEM = (
+    "You score a learner's paragraph for a first-year Indian undergraduate. "
+    "Reply with a JSON object only, no other text: one key per skill, each "
+    "with level (1-5 against the rubric below), reason (one short sentence), "
+    "and evidence (exact words copied from the paragraph). Judge only what "
+    "is written; never invent facts.")
+
+# Spark levels map to band midpoints so level_for_score round-trips exactly.
+DIAGNOSE_LEVEL_SCORES = {1: 10, 2: 30, 3: 50, 4: 70, 5: 90}
+
+
+def _diagnose_messages(text: str, discipline: str) -> list[dict]:
+    """Prompt: discipline, the fixed rubric, and the paragraph."""
+    blocks = []
+    for skill in SKILLS:
+        levels = " ".join(
+            f"L{i + 1}: {d}" for i, d in enumerate(DIAGNOSE_RUBRIC[skill]))
+        blocks.append(f"{skill}: {levels}")
+    user = (f"Discipline: {discipline}. "
+            f"Rubric: {' '.join(blocks)} Paragraph: {text}")
+    return [{"role": "system", "content": SPARK_DIAGNOSE_SYSTEM},
+            {"role": "user", "content": user}]
+
+
+def _validate_diagnosis(data, text: str) -> dict | None:
+    """Levels 1-5 for all 7 skills with reasons and in-text evidence."""
+    if not isinstance(data, dict):
+        return None
+    flat = " ".join(text.split())
+    fields = {}
+    for skill in SKILLS:
+        entry = data.get(skill)
+        if not isinstance(entry, dict):
+            return None
+        level = entry.get("level")
+        if (isinstance(level, bool) or not isinstance(level, int)
+                or not 1 <= level <= 5):
+            return None
+        reason = (entry.get("reason") or "").strip()
+        evidence = (entry.get("evidence") or "").strip()
+        if not reason or not evidence:
+            return None
+        if " ".join(evidence.split()) not in flat:
+            return None
+        fields[skill] = {"level": level, "reason": reason,
+                         "evidence": evidence}
+    return fields
+
+
+def _diagnose_with_spark(learner_id: int, text: str,
+                         discipline: str) -> dict | None:
+    """Levels + reasons from Spark (None when unusable after retries)."""
+    if _demo_mode() or _model_api_key() is None:
+        return None
+    messages = _diagnose_messages(text, discipline)
+    for _ in range(1 + SPARK_MAX_REGENS):
+        try:
+            data = json.loads(_spark_chat(messages, temperature=0))
+        except (SparkError, ValueError):
+            continue
+        fields = _validate_diagnosis(data, text)
+        if fields is not None:
+            return fields
+    return None
+
+
+# --- Demo mode (fixed script from the Demo kit in docs/plan.md) ----------------
+# On when DEMO_MODE=true in the environment or backend .env (off by default).
+# Only Teacher Studio uses live Muse Spark in demo mode.
+def _demo_mode() -> bool:
+    return (_env_key("DEMO_MODE") or "").strip().lower() in ("true", "1", "yes")
+
+
+DEMO_LEARNER_ID = 1
+
+DEMO_WEAK_PARAGRAPH = (
+    "Plastic is very big problem. In my village the river is full of plastic. "
+    "People throw the waste in river and fish is dying. "
+    "Government should do something. Also the students also should know. "
+    "So plastic is dangerous for nature and we must stop it.")
+
+DEMO_IMPROVED_PARAGRAPH = (
+    "Plastic waste is seriously harming the river in my village. "
+    "People throw bottles and bags into the water, and the fish are dying. "
+    "The panchayat should set up waste bins near the river, and students "
+    "can help by spreading awareness.")
+
+DEMO_DIAGNOSIS = {
+    "Paragraphing": {"level": 1,
+                     "reason": "No clear topic sentence; ideas are listed.",
+                     "evidence": "Plastic is very big problem."},
+    "Academic tone": {"level": 1, "reason": "Conversational.",
+                      "evidence": "Government should do something."},
+    "Using sources": {"level": 1, "reason": "No sources.",
+                      "evidence": "In my village the river is full of plastic."},
+    "Grammar": {"level": 2, "reason": "Missing articles; repeated \"also\".",
+                "evidence": "People throw the waste in river"},
+    "Argument": {"level": 2, "reason": "A claim with one weak reason.",
+                 "evidence": "So plastic is dangerous for nature"},
+    "Sentence structure": {"level": 2,
+                           "reason": "Mostly short simple sentences.",
+                           "evidence": "Also the students also should know."},
+    "Vocabulary": {"level": 2, "reason": "Mostly everyday words.",
+                   "evidence": "very big problem"},
+}
+
+DEMO_TWIN_RESPONSE = (
+    "You are saying plastic in your village river is killing fish, and "
+    "people must act. Your main problem: the first sentence, 'Plastic is "
+    "very big problem', does not say what this paragraph will prove. Try "
+    "starting like this: 'Plastic waste is harming ______ in ______.'")
+
+DEMO_COMPARISON = (
+    "In your last paragraph you had no clear topic sentence; this time "
+    "your first sentence names the problem and the place.")
+
+DEMO_PRACTICE_ITEMS = [
+    {"id": "d1", "type": "mcq", "kind": "recognise",
+     "prompt": "Which is the best topic sentence for a paragraph about "
+               "phones in college?",
+     "options": ["(a) I like phones.",
+                 "(b) Mobile phones can support learning in college when "
+                 "clear rules are followed.",
+                 "(c) Phones are there.", "(d) Many students have phones."],
+     "answer": "b",
+     "explanation": "b names the topic and one clear point; the others "
+                    "are vague or off-point.",
+     "source": "", "skill": "Paragraphing", "module": "topic-sentences"},
+    {"id": "d2", "type": "order", "kind": "repair",
+     "prompt": "Put these in order to make a paragraph: [A] For example, "
+               "students can look up difficult terms during a lecture. "
+               "[B] Mobile phones can support learning in college when "
+               "clear rules are followed. [C] Therefore, colleges should "
+               "allow phones with clear limits. [D] They give instant "
+               "access to reference material.",
+     "options": ["B, D, A, C", "A, B, C, D", "D, C, B, A"],
+     "answer": "B, D, A, C",
+     "explanation": "B states the main idea first; D and A support it; "
+                    "C concludes.",
+     "source": "", "skill": "Paragraphing", "module": "topic-sentences"},
+    {"id": "d3", "type": "write", "kind": "produce",
+     "prompt": "Complete the topic sentence for your own paragraph: "
+               "\"Plastic waste in rivers ______.\"",
+     "options": [], "answer": "",
+     "explanation": "Write one formal sentence stating a single main idea "
+                    "about plastic waste in rivers.",
+     "source": "", "skill": "Paragraphing", "module": "topic-sentences"},
+]
+
+
+def _demo_text_match(text: str, fixed: str) -> bool:
+    """True when the text is the fixed script paragraph (spacing ignored)."""
+    return " ".join(text.split()) == " ".join(fixed.split())
+
+
+def _demo_practice_set() -> list[dict]:
+    """Fresh copies of the fixed Paragraphing L1 set."""
+    return [{**it, "options": list(it["options"])}
+            for it in DEMO_PRACTICE_ITEMS]
+
+
+def _demo_produce_fields(text: str) -> dict:
+    """Demo judge for the produce item: one formal sentence, one main idea."""
+    clean = (text or "").strip()
+    sents = [s for s in re.split(r"[.!?]+", clean) if s.strip()]
+    words = clean.split()
+    lowered = clean.lower()
+    chatty = any(re.search(rf"\b{re.escape(w)}\b", lowered)
+                 for w in INFORMAL_WORDS)
+    ok = (len(sents) == 1 and len(words) >= 6 and clean[:1].isupper()
+          and re.search(r"[.!?]$", clean) is not None and not chatty)
+    quote = clean if len(clean) <= 140 else clean[:137] + "..."
+    if ok:
+        return {"status": "ok",
+                "strength": f"Good topic sentence: \"{quote}\".",
+                "problem": "", "quote": quote,
+                "next_action": "Keep going.", "score": 2}
+    return {"status": "ok", "strength": "",
+            "problem": f"Not yet: \"{quote}\"." if clean
+                       else "You gave no answer here.",
+            "quote": quote if clean else "no answer",
+            "next_action": ("Write one formal sentence stating a single main "
+                            "idea about plastic waste in rivers."),
+            "score": 0}
 
 
 # Concrete signs per skill for comparing two drafts: what weak vs strong
@@ -2797,7 +3098,8 @@ def _verify_practice_item_rules(item: dict) -> list[str]:
     if not answer:
         failed.append("has-answer")
     elif item.get("type") == "mcq" and not any(
-            str(o).strip().lower().startswith(answer.lower()) for o in options):
+            str(o).strip().lower().lstrip("(").startswith(answer.lower())
+            for o in options):
         failed.append("answer-matches-option")
     if not (item.get("explanation") or "").strip():
         failed.append("has-explanation")
@@ -3067,7 +3369,10 @@ def _teacher_mcq_item(num: int, correct: str, distractors: list[str],
 # the set stays excerpt-only even when Spark invents or the API is down.
 SPARK_CHAT_URL = "https://api.meta.ai/v1/chat/completions"
 SPARK_MODEL = "muse-spark-1.3"
-SPARK_TIMEOUT = 45
+SPARK_TIMEOUT = 20
+# Verifier retry budget, shared by every Spark path: 1 initial attempt plus
+# at most 2 regenerations, then the safe template or deterministic response.
+SPARK_MAX_REGENS = 2
 
 
 class SparkError(Exception):
@@ -3084,15 +3389,18 @@ def _spark_post(url: str, body: dict, key: str, timeout: int) -> dict:
         return json.loads(res.read().decode("utf-8"))
 
 
-def _spark_chat(messages: list[dict]) -> str:
+def _spark_chat(messages: list[dict],
+                temperature: float | None = None) -> str:
     """One JSON-mode chat completion; assistant text, or raise SparkError."""
     key = _model_api_key()
     if not key:
         raise SparkError("no API key")
+    body = {"model": SPARK_MODEL, "messages": messages,
+            "response_format": {"type": "json_object"}}
+    if temperature is not None:
+        body["temperature"] = temperature
     try:
-        data = _spark_post(SPARK_CHAT_URL, {
-            "model": SPARK_MODEL, "messages": messages,
-            "response_format": {"type": "json_object"}}, key, SPARK_TIMEOUT)
+        data = _spark_post(SPARK_CHAT_URL, body, key, SPARK_TIMEOUT)
         return data["choices"][0]["message"]["content"]
     except SparkError:
         raise
@@ -3176,21 +3484,40 @@ def _item_grounded(item: dict, sentences: list[str]) -> bool:
 
 def _spark_draft_items(shown: list, request_text: str, parsed: dict,
                        note: str) -> list[dict]:
-    """Spark's items that pass structure + grounding (raises SparkError)."""
-    raw = _spark_chat(_spark_teacher_messages(shown, request_text, parsed, note))
-    try:
-        drafts = json.loads(raw)
-    except ValueError as exc:
-        raise SparkError("bad JSON") from exc
-    if not isinstance(drafts, list):
-        raise SparkError("not a list")
+    """Spark's items that pass structure + grounding (raises SparkError).
+
+    Regenerates up to SPARK_MAX_REGENS times while short, merging new
+    passing drafts; the caller backfills whatever is still missing. No key
+    check here: _spark_chat raises SparkError when keyless, which the loop
+    treats as a failed attempt.
+    """
+    messages = _spark_teacher_messages(shown, request_text, parsed, note)
     sentences = [s for text, _ in shown for s in clean_sentences(text)]
-    kept = []
-    for draft in drafts[:parsed["count"]]:
-        item = _resolve_spark_item(draft, shown, parsed["skill"])
-        if (item is not None and verify("practice_item", item)["pass"]
-                and _item_grounded(item, sentences)):
-            kept.append(item)
+    kept: list[dict] = []
+    seen = set()
+    for _ in range(1 + SPARK_MAX_REGENS):
+        if len(kept) >= parsed["count"]:
+            break
+        try:
+            raw = _spark_chat(messages)
+            drafts = json.loads(raw)
+        except (SparkError, ValueError):
+            continue
+        if not isinstance(drafts, list):
+            continue
+        for draft in drafts:
+            if len(kept) >= parsed["count"]:
+                break
+            item = _resolve_spark_item(draft, shown, parsed["skill"])
+            if item is None:
+                continue
+            key = (item["type"], item["prompt"])
+            if key in seen:
+                continue
+            if (verify("practice_item", item)["pass"]
+                    and _item_grounded(item, sentences)):
+                seen.add(key)
+                kept.append(item)
     return kept
 
 
@@ -3341,14 +3668,63 @@ def post_diagnose(data: DiagnoseIn):
     # Snapshot before saving: in the normal draft -> diagnose flow this is
     # the previous draft's diagnosis, used for the twin's comparison.
     prev_scores = latest_scores(data.learner_id)
-    scores = diagnose_text(text)
-    weakest = min(SKILLS, key=lambda s: scores[s])
-    store.save_skill_scores(data.learner_id, scores)
-    store.log_event(data.learner_id, "Diagnose", "diagnose", "heuristic-scorer",
-                    f"weakest={weakest} scores={scores}")
-    level = level_for_score(scores[weakest])
     discipline = learner.get("discipline") or "Sciences"
-    if prev_scores:
+    heuristic = diagnose_text(text)
+    demo_fixed = None
+    if _demo_mode() and _demo_text_match(text, DEMO_WEAK_PARAGRAPH):
+        demo_fixed = DEMO_DIAGNOSIS
+    demo_improved = _demo_mode() and _demo_text_match(
+        text, DEMO_IMPROVED_PARAGRAPH)
+    sparked = _diagnose_with_spark(data.learner_id, text, discipline) \
+        if demo_fixed is None else None
+    if demo_fixed is not None:
+        scores = {s: DIAGNOSE_LEVEL_SCORES[demo_fixed[s]["level"]]
+                  for s in SKILLS}
+        weakest = min(SKILLS, key=lambda s: demo_fixed[s]["level"])
+        wlevel = demo_fixed[weakest]["level"]
+        store.log_event(
+            data.learner_id, "Diagnose", "twin", "diagnose-demo",
+            f"Demo diagnosis (fixed): weakest={weakest} L{wlevel} "
+            f"({demo_fixed[weakest]['reason']} "
+            f"\"{demo_fixed[weakest]['evidence']}\")")
+    elif sparked is not None:
+        scores = {s: DIAGNOSE_LEVEL_SCORES[sparked[s]["level"]] for s in SKILLS}
+        weakest = min(SKILLS, key=lambda s: sparked[s]["level"])
+        wlevel = sparked[weakest]["level"]
+        store.log_event(
+            data.learner_id, "Diagnose", "twin", "diagnose-spark",
+            f"Diagnosed by Muse Spark: weakest={weakest} L{wlevel} "
+            f"({sparked[weakest]['reason']} "
+            f"\"{sparked[weakest]['evidence']}\")")
+        gaps = [f"{s} L{sparked[s]['level']} vs "
+                f"heuristic L{level_for_score(heuristic[s])}"
+                for s in SKILLS
+                if abs(sparked[s]["level"]
+                       - level_for_score(heuristic[s])) > 2]
+        if gaps:
+            store.log_event(data.learner_id, "Diagnose", "twin",
+                            "diagnose-sanity",
+                            "Spark-heuristic gap over 2 levels: "
+                            + "; ".join(gaps))
+    else:
+        scores = heuristic
+        if demo_improved:
+            scores = dict(scores)
+            scores["Paragraphing"] = DIAGNOSE_LEVEL_SCORES[2]
+        weakest = min(SKILLS, key=lambda s: scores[s])
+        if demo_improved:
+            store.log_event(
+                data.learner_id, "Diagnose", "twin", "diagnose-demo",
+                "Demo diagnosis (improved paragraph; Paragraphing pinned L2)")
+        else:
+            store.log_event(data.learner_id, "Diagnose", "diagnose",
+                            "heuristic-scorer",
+                            f"weakest={weakest} scores={scores}")
+    store.save_skill_scores(data.learner_id, scores)
+    level = level_for_score(scores[weakest])
+    if demo_improved:
+        comparison = DEMO_COMPARISON
+    elif prev_scores:
         comparison = compare_note(
             weakest, level_for_score(prev_scores.get(weakest, 0)), level)
     else:
@@ -3366,6 +3742,19 @@ def post_diagnose(data: DiagnoseIn):
             "level_changes": level_changes,
             "study_material": study_material(weakest),
             "learn": learn_card(weakest, level, discipline)}
+
+
+@app.get("/rubric")
+def get_rubric():
+    """The fixed 7-skill rubric (same data the Diagnoser sends to Spark)."""
+    return {"skills": [{"skill": skill, "levels": list(DIAGNOSE_RUBRIC[skill])}
+                       for skill in SKILLS]}
+
+
+@app.get("/config")
+def get_config():
+    """Client flags: demo mode badge."""
+    return {"demo_mode": _demo_mode()}
 
 
 @app.get("/curriculum")
@@ -3891,9 +4280,12 @@ def get_practice(learner_id: int):
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     discipline = learner.get("discipline") or "Sciences"
     skill, level = weakest_skill(latest_scores(learner_id))
-    published = store.get_teacher_set(skill, level, discipline)
+    demo = _demo_mode() and skill == "Paragraphing" and level == 1
+    published = None if demo else store.get_teacher_set(skill, level, discipline)
     review: list[dict] | None = None
-    if not published:
+    if demo:
+        items = _demo_practice_set()
+    if not published and not demo:
         count = sum(1 for r in store.get_events(learner_id)
                     if r["tool"] == "get_practice")
         if count % REVIEW_EVERY == REVIEW_EVERY - 1:
@@ -3910,10 +4302,10 @@ def get_practice(learner_id: int):
             published = None
     if review is not None:
         items = _review_set(discipline, level, review, skill)
-    elif not published and SKILL_MODULE.get(skill) is not None:
+    elif not published and not demo and SKILL_MODULE.get(skill) is not None:
         items = _generated_practice_set(skill, SKILL_MODULE[skill], discipline,
                                         level)
-    elif not published:
+    elif not published and not demo:
         items = [it for it in practice_items_for(skill, level, discipline)
                  if verify("practice_item", it,
                            rules=PRACTICE_STRUCTURAL_RULES)["pass"]]
@@ -3932,6 +4324,7 @@ def get_practice(learner_id: int):
                            "level": level, "discipline": discipline,
                            "published": published is not None,
                            "review": review is not None,
+                           "demo": demo,
                            "items": items,
                            "answers": {it["id"]: it["answer"] for it in items}}
     public = [{k: v for k, v in it.items() if k not in ("answer", "variants")}
@@ -3954,7 +4347,8 @@ def post_answers(data: PracticeAnswersIn):
     skill = issued["skill"]
     items = issued.get("items") or practice_items_for(
         skill, issued["level"], issued.get("discipline"))
-    judged = _judge_practice_set(data.learner_id, skill, items, data.answers)
+    judged = _judge_practice_set(data.learner_id, skill, items, data.answers,
+                                 demo=issued.get("demo", False))
     details: list[dict] = []
     correct = 0
     per_skill: dict[str, list[int]] = {}
@@ -3975,24 +4369,33 @@ def post_answers(data: PracticeAnswersIn):
     accuracy = round(100 * correct / total) if total else 0
     mastery: dict[str, bool] = {}
     moved: dict[str, float] = {}
+    level_ups: list[dict] = []
     for iskill, (hit, count) in per_skill.items():
         store.save_practice_result(
             data.learner_id, iskill, round(100 * hit / count))
+        start = level_for_score(latest_scores(data.learner_id).get(iskill, 0))
         if _mastery_move_up(data.learner_id, iskill):
             mastery[iskill] = True
-            moved[iskill] = latest_scores(data.learner_id)[iskill]
+            if _demo_mode():
+                level_ups.append({"skill": iskill, "from": start,
+                                  "to": start + 1})
+            else:
+                moved[iskill] = latest_scores(data.learner_id)[iskill]
+                level_ups.append(
+                    {"skill": iskill, "from": start,
+                     "to": level_for_score(moved[iskill])})
         else:
             mastery[iskill] = False
     new_score: float | None = max(moved.values()) if moved else None
     store.log_event(data.learner_id, "Practise", "twin", "score_answers",
                     f"set_id={data.set_id} {correct}/{total} "
-                    f"leveled_up={bool(moved)}")
+                    f"leveled_up={bool(level_ups)}")
     store.log_event(data.learner_id, "Practise", "twin", "assess",
                     f"assessed {total} answers")
     return {"correct": correct, "total": total, "accuracy": accuracy,
             "skill": skill, "new_score": new_score,
-            "leveled_up": bool(moved), "mastery": mastery,
-            "details": details}
+            "leveled_up": bool(level_ups), "mastery": mastery,
+            "level_ups": level_ups, "details": details}
 
 
 @app.post("/level-check")
@@ -4541,6 +4944,15 @@ def post_twin_ask(data: TwinAskIn):
     if store.get_learner(data.learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     weakest, _ = weakest_skill(latest_scores(data.learner_id))
+    if _demo_mode():
+        drafts = store.get_drafts(data.learner_id)
+        if drafts and _demo_text_match(drafts[-1]["content"],
+                                       DEMO_WEAK_PARAGRAPH):
+            # Fixed script, pre-approved: it quotes the draft, which the
+            # verifier (chat message only) would reject.
+            store.log_event(data.learner_id, "Bridge", "twin", "demo-twin",
+                            "Demo twin reply (fixed)")
+            return {"reply": DEMO_TWIN_RESPONSE, "weakest": weakest}
     reply = twin_scaffold_reply(data.message, weakest)
     verdict = verify("twin_reply", reply, {"message": data.message})
     if not verdict["pass"]:  # never serve a reply that breaks the checklist

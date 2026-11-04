@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api.js';
+import HowScored from '../components/HowScored.jsx';
 
 // Teacher: one text box. Generate items built only from library excerpts,
 // see the Verifier result, then Publish or Regenerate. No editor.
@@ -56,6 +57,7 @@ export default function Teacher({ go }) {
     <div>
       <h2>Teacher tools</h2>
       {error && <div className="error">{error}</div>}
+      <HowScored />
 
       {published && (
         <div className="card accent-soft">

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { api } from './api.js';
 import Home from './screens/Home.jsx';
 import Write from './screens/Write.jsx';
 import Learn from './screens/Learn.jsx';
@@ -10,6 +11,11 @@ import BottomNav from './components/BottomNav.jsx';
 // Five tabs, no router needed: simple state switch.
 export default function App() {
   const [tab, setTab] = useState('home');
+  const [demo, setDemo] = useState(false);
+
+  useEffect(() => {
+    api.config().then((c) => setDemo(!!c.demo_mode)).catch(() => {});
+  }, []);
 
   const go = (next) => {
     setTab(next);
@@ -20,6 +26,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <span className="brand">VibeEduTwin</span>
+        {demo && <span className="demo-badge">Demo mode</span>}
       </header>
       <main className="screen">
         {tab === 'home' && <Home go={go} />}

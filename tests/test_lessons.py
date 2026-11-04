@@ -176,3 +176,21 @@ def test_lesson_stepper_and_info_icon():
     assert "The idea:" in compact and "Real example:" in compact
     assert "BasedOn" in compact and "Practise this" in compact
     assert "license unknown" not in compact and "license unknown" not in view
+
+
+def test_learn_cards_use_no_spark(tmp_path, monkeypatch):
+    doc = ("A topic sentence opens the paragraph. It states the main point "
+           "first. Details that follow support it.")
+    meta = {"source": "Writing for Success (McLean).pdf", "license": "CC BY-NC-SA 3.0"}
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([doc], [meta]))
+
+    def boom(messages):
+        raise AssertionError("Learn cards are excerpt-only; Spark must not run")
+
+    monkeypatch.setattr(main, "_spark_chat", boom)
+    import learner_store as store
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "learn_nospark.db")
+    learner_id = store.create_learner("T", "10", "English", "Malayalam")
+    lesson = main.get_curriculum_module(learner_id, "Sciences", "topic-sentences")
+    assert lesson["hook"] and lesson["idea"]["text"] and lesson["example"]["text"]

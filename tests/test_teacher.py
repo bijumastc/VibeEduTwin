@@ -339,3 +339,45 @@ def test_teacher_page_wiring():
     practice = (ROOT / "frontend" / "src" / "screens" / "Practice.jsx").read_text(
         encoding="utf-8")
     assert "Teacher set" in practice
+
+
+# --- Retry bounds: 2 regens, short timeout, then safe fallback -----------------
+def test_spark_retry_budget_and_timeout_are_bounded():
+    assert main.SPARK_MAX_REGENS == 2
+    assert main.SPARK_TIMEOUT <= 20
+
+
+def test_teacher_retries_twice_then_backfills(monkeypatch):
+    calls = []
+
+    def bad_chat(messages):
+        calls.append(messages)
+        return _spark_reply([_invented_mcq(), _invented_mcq()])
+
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_spark_chat", bad_chat)
+    items = main.generate_practice_set("Make 2 practice items on grammar")
+    assert len(calls) == 3  # 1 initial + 2 regens
+    blob = " ".join(i["prompt"] + " " + " ".join(i["options"]) for i in items)
+    assert "Zebra" not in blob and "lava" not in blob
+    assert len(items) == 2
+    assert all(main.verify("practice_item", item)["pass"] for item in items)
+
+
+def test_teacher_regen_merges_new_passing_drafts(monkeypatch):
+    replies = [_spark_reply([_grounded_order(), _invented_mcq()]),
+               _spark_reply([_grounded_mcq()])]
+    calls = []
+
+    def chat(messages):
+        calls.append(messages)
+        return replies[min(len(calls) - 1, len(replies) - 1)]
+
+    monkeypatch.setattr(main, "_query_guides", _fake_query)
+    monkeypatch.setattr(main, "_spark_chat", chat)
+    items = main.generate_practice_set("Make 2 practice items on grammar")
+    assert len(calls) == 2  # second call only needed one new draft
+    blob = " ".join(i["prompt"] for i in items)
+    assert "Put the paragraph in order" in blob
+    assert "Which sentence gives grammar advice?" in blob
+    assert all(main.verify("practice_item", item)["pass"] for item in items)

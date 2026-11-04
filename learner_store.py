@@ -15,14 +15,16 @@ Usage:
 """
 
 import json
+import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 # --- Locations ----------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent
-DB_PATH = ROOT / "learners.db"   # SQLite file (created on first use)
-CHROMA_DIR = ROOT / "chroma_db"  # ChromaDB persistent storage
+# VIBEEDUTWIN_DB / VIBEEDUTWIN_CHROMA redirect storage (tests, demo resets).
+DB_PATH = Path(os.environ.get("VIBEEDUTWIN_DB") or ROOT / "learners.db")
+CHROMA_DIR = Path(os.environ.get("VIBEEDUTWIN_CHROMA") or ROOT / "chroma_db")
 
 
 # --- Schema -------------------------------------------------------------------
@@ -153,6 +155,52 @@ def get_learner(learner_id: int) -> dict | None:
             "SELECT * FROM learners WHERE id = ?", (learner_id,)
         ).fetchone()
         return dict(row) if row else None
+
+
+def reset_learner(learner_id: int, discipline: str = "Sciences",
+                  include_memory: bool = True) -> None:
+    """Clear one learner back to no history (demo re-recordings).
+
+    Keeps the learner row (same id) on the given discipline; deletes drafts,
+    scores, events, and practice results. Also drops the learner's writing
+    collection unless include_memory is False.
+    """
+    if discipline not in DISCIPLINES:
+        raise ValueError(
+            f"Unknown discipline {discipline!r}. Choose from: {', '.join(DISCIPLINES)}"
+        )
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM learners WHERE id = ?", (learner_id,)
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO learners (id, name, year, subject,"
+                " language_preference, discipline, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (learner_id, "Demo", "10", "English", "Malayalam",
+                 discipline, _utcnow()),
+            )
+        else:
+            conn.execute(
+                "UPDATE learners SET discipline = ? WHERE id = ?",
+                (discipline, learner_id),
+            )
+        for table in ("skill_scores", "drafts", "event_log",
+                      "practice_results"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE learner_id = ?", (learner_id,)
+            )
+    if include_memory:
+        delete_writing_samples(learner_id)
+
+
+def delete_writing_samples(learner_id: int) -> None:
+    """Drop one learner's writing collection; missing collection is fine."""
+    try:
+        _get_chroma_client().delete_collection(f"learner_{learner_id}_writing")
+    except ValueError:
+        pass  # nothing stored yet
 
 
 # --- Skill scores ---------------------------------------------------------------

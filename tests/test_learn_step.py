@@ -96,6 +96,7 @@ def test_signup_endpoint(tmp_db):
 def test_diagnose_includes_learn_card(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "study_material", lambda skill, n_results=2: [])
     monkeypatch.setattr(main, "_query_guides", lambda query, n_results=3: ([], []))
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)  # heuristic path
     learner_id = _learner(tmp_db, "Commerce & Management")
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content="Nice good."))
     assert res["learn"]["skill"] == res["weakest"]

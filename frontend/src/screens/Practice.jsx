@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, LeveledUp } from '../api.js';
 import HowItDecided from '../components/HowItDecided.jsx';
+import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 
 // Practice: one item at a time, tap to answer, score at the end.
@@ -12,6 +13,32 @@ const KIND_LABELS = {
   produce: 'Write your own',
   apply: 'Apply it',
 };
+
+// Level-up screen: the move (Skill Level x → y) with the growth chart.
+function LevelUpCard({ ups, go }) {
+  const [scores, setScores] = useState(null);
+
+  useEffect(() => {
+    api.growth().then((g) => setScores(g.scores || {})).catch(() => setScores({}));
+  }, []);
+
+  const names = Object.keys(scores || {});
+  const weakest = names.length > 0
+    ? names.reduce((a, b) => (scores[a] <= scores[b] ? a : b))
+    : null;
+
+  return (
+    <div className="card tint">
+      {ups.map((up) => (
+        <div className="card-title" key={up.skill}>
+          {up.skill} Level {up.from} → {up.to}
+        </div>
+      ))}
+      {scores && names.length > 0 && <SkillBars scores={scores} weakest={weakest} />}
+      <button className="btn secondary" onClick={() => go('growth')}>See my growth</button>
+    </div>
+  );
+}
 
 export default function Practice({ go }) {
   const [set, setSet] = useState(null);
@@ -53,9 +80,9 @@ export default function Practice({ go }) {
   const choose = (option) => {
     if (picked) return; // ignore double taps while advancing
     const item = set.items[index];
-    // MCQ options look like "B) ..." (answer is the letter);
+    // MCQ options look like "B) ..." or "(b) ..." (answer is the letter);
     // order options are full sequences like "2,1,3" (answer is the whole text).
-    const letter = option.match(/^\s*([A-Za-z])\)/);
+    const letter = option.match(/^\s*\(?([A-Za-z])\)/);
     const value = letter ? letter[1] : option.trim();
     const next = { ...answers, [item.id]: value };
     setAnswers(next);
@@ -82,6 +109,9 @@ export default function Practice({ go }) {
       <div>
         <h2>Result</h2>
         {result.leveled_up && <div className="levelup">Level up in {result.skill}!</div>}
+        {result.level_ups && result.level_ups.length > 0 && (
+          <LevelUpCard ups={result.level_ups} go={go} />
+        )}
         <div className="card tint">
           <div className="score-big">{result.correct}/{result.total}</div>
           <p className="muted">{result.accuracy}% correct · {result.skill}</p>

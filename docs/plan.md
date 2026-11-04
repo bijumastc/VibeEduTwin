@@ -76,3 +76,146 @@ structurally checked at serve time and failures are excluded.
   for off-task, nonsense and copied tries). On failure the fixed ladder runs.
   Practice answers use the same checklist with the chosen option as the
   learner's words; rejected drafts fall back to templates.
+
+## Rubric
+
+The fixed 7-skill rubric, one short line per level. Mirrored exactly in
+`DIAGNOSE_RUBRIC` in `main.py` (sent to Muse Spark with every diagnosis) and
+served at `GET /rubric` for the "How I'm scored" link.
+
+### Grammar
+
+- L1: Frequent errors block meaning.
+- L2: Many errors; meaning mostly clear.
+- L3: Some errors; meaning clear.
+- L4: Few, minor errors.
+- L5: Rare, minor errors.
+
+### Vocabulary
+
+- L1: Everyday words only, often repeated.
+- L2: Mostly everyday words; a few academic words.
+- L3: Some academic words, sometimes misused.
+- L4: Academic and subject terms, mostly used correctly.
+- L5: Precise academic and subject terms.
+
+### Sentence structure
+
+- L1: Short or run-on sentences.
+- L2: Mostly simple sentences; some joined correctly.
+- L3: Mix of simple and compound sentences.
+- L4: Varied sentences with few errors.
+- L5: Varied, controlled sentences.
+
+### Paragraphing
+
+- L1: No clear topic sentence; ideas listed.
+- L2: Topic sentence present but vague.
+- L3: Clear topic sentence with some support.
+- L4: Clear topic sentence, relevant support, some links.
+- L5: Clear topic sentence, support, and a link to the next idea.
+
+### Argument
+
+- L1: Opinions without reasons.
+- L2: A claim with one weak reason.
+- L3: A claim with reasons but little evidence.
+- L4: A claim with reasons and evidence.
+- L5: Claim, evidence, and a counterpoint answered.
+
+### Using sources
+
+- L1: No sources.
+- L2: A source mentioned vaguely, no citation.
+- L3: A source cited, format inconsistent.
+- L4: Correct citation, some copied wording.
+- L5: Correct paraphrase and citation.
+
+### Academic tone
+
+- L1: Conversational.
+- L2: Mostly conversational, a few formal phrases.
+- L3: Mix of formal and informal.
+- L4: Mostly formal and objective.
+- L5: Formal, objective, and appropriately hedged.
+
+## Demo kit
+
+Scripted recording flow. Demo mode is on when `DEMO_MODE=true` in `.env`
+(off by default); the app shows a small "Demo mode" label. In demo mode
+only Teacher Studio uses live Muse Spark: diagnosis, the twin reply, the
+scaffold Assessor, and practice judging are fixed or deterministic.
+`scripts/reset_demo.py` clears the demo learner (id 1) so the flow can be
+recorded several times; restart the backend too (issued sets and scaffold
+attempts live in memory).
+
+Demo learner: Sciences discipline, no history.
+
+Weak paragraph:
+
+> Plastic is very big problem. In my village the river is full of plastic.
+> People throw the waste in river and fish is dying. Government should do
+> something. Also the students also should know. So plastic is dangerous
+> for nature and we must stop it.
+
+Fixed diagnosis (level, reason, evidence quote):
+
+- Paragraphing 1: No clear topic sentence; ideas are listed.
+  "Plastic is very big problem."
+- Academic tone 1: Conversational. "Government should do something."
+- Using sources 1: No sources. "In my village the river is full of plastic."
+- Grammar 2: Missing articles; repeated "also".
+  "People throw the waste in river"
+- Argument 2: A claim with one weak reason.
+  "So plastic is dangerous for nature"
+- Sentence structure 2: Mostly short simple sentences.
+  "Also the students also should know."
+- Vocabulary 2: Mostly everyday words. "very big problem"
+
+Weakest skill: Paragraphing. Any other paragraph in demo mode is scored
+by the heuristic Diagnoser (no Spark).
+
+Fixed twin response (simple English only), served when the demo
+learner's latest draft is the weak paragraph (the fixed script bypasses
+the twin Verifier, which only accepts quotes from the chat message):
+
+> You are saying plastic in your village river is killing fish, and
+> people must act. Your main problem: the first sentence, 'Plastic is
+> very big problem', does not say what this paragraph will prove. Try
+> starting like this: 'Plastic waste is harming ______ in ______.'
+
+Practice set (Paragraphing, Level 1), served for every Paragraphing L1
+request in demo mode (it wins over published sets so recordings stay
+identical):
+
+1. Recognise: Which is the best topic sentence for a paragraph about
+   phones in college? (a) I like phones. (b) Mobile phones can support
+   learning in college when clear rules are followed. (c) Phones are
+   there. (d) Many students have phones. Answer: b.
+2. Repair: Put these in order to make a paragraph: [A] For example,
+   students can look up difficult terms during a lecture. [B] Mobile
+   phones can support learning in college when clear rules are followed.
+   [C] Therefore, colleges should allow phones with clear limits.
+   [D] They give instant access to reference material.
+   Answer: B, D, A, C. (Tap options need distractors, not in the kit:
+   A, B, C, D and D, C, B, A.)
+3. Produce: Complete the topic sentence for your own paragraph:
+   "Plastic waste in rivers ______." Pass if it states one main idea in
+   formal English: exactly one sentence, at least 6 words, starts with a
+   capital, ends with punctuation, no chatty words.
+
+Two sets at 80% or more show the level-up screen: Paragraphing
+Level 1 → 2, with the growth chart. Demo practice shows the level-up
+without saving the bump, so the improved paragraph still compares 1 → 2.
+
+Improved paragraph (for the comparison step):
+
+> Plastic waste is seriously harming the river in my village. People
+> throw bottles and bags into the water, and the fish are dying. The
+> panchayat should set up waste bins near the river, and students can
+> help by spreading awareness.
+
+Expected comparison: "In your last paragraph you had no clear topic
+sentence; this time your first sentence names the problem and the
+place." Other skills keep their heuristic levels; Paragraphing is
+pinned to 2. Paragraphing 1 → 2.

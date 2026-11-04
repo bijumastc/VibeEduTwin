@@ -144,3 +144,17 @@ def test_input_hint_mentions_malayalam_and_manglish():
     panel = (ROOT / "frontend" / "src" / "components" / "TwinPanel.jsx").read_text(
         encoding="utf-8")
     assert "You can type in Malayalam or Manglish." in panel
+
+
+def test_twin_replies_use_no_spark(tmp_path, monkeypatch):
+    import learner_store as store
+
+    def boom(messages):
+        raise AssertionError("twin replies are template-only; Spark must not run")
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "twin_nospark.db")
+    monkeypatch.setattr(main, "_spark_chat", boom)
+    learner_id = store.create_learner("T", "10", "English", "Malayalam")
+    res = main.post_twin_ask(main.TwinAskIn(learner_id=learner_id,
+                                            message="I am stuck on my line."))
+    assert res["reply"].strip() and res["weakest"]
