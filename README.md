@@ -1,130 +1,127 @@
-# VibeEduTwin — Knowledge Ingest
+# VibeEduTwin
 
-Practice loop: Write → Diagnose → Bridge → Practise → Grow.
-This step builds the retrieval knowledge base from openly licensed books only.
+**An adaptive academic-writing practice loop for undergraduates from Malayalam and other vernacular-medium backgrounds.**
 
-## Setup (Windows PowerShell)
+Built for the Meta Global AI Developer Hackathon 2026 · Indie Developer Track · Theme: Build for Your World
 
-```powershell
+Demo video: [ADD LINK] · Architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
+
+---
+
+## The problem
+
+Many students in Kerala and across India study at school in Malayalam or another Indian language, then meet English-medium academic writing at college. They often have strong ideas but weak control of topic sentences, paragraph development, citation and academic tone. Personal feedback on writing is scarce: one teacher may have a hundred students. Generic AI tools make it worse, because they write the essay for the student and the student learns nothing.
+
+## What VibeEduTwin does
+
+VibeEduTwin is a writing twin that coaches through a structured practice loop, not a chat box.
+
+1. **Write:** the learner types, speaks or photographs a handwritten paragraph. They can also ask questions in Malayalam, Manglish or another Indian language.
+2. **Diagnose:** Muse Spark scores the paragraph on a fixed 7-skill rubric (grammar, vocabulary, sentence structure, paragraphing, argument, using sources, academic tone). Every score quotes the learner's own words as evidence.
+3. **Feedback:** the learner gets one real strength, the main problems with what is wrong and why, one model sentence (before → after), and a "your turn" prompt to fix the rest themselves.
+4. **Learn:** a curriculum of 6 disciplines × 9 modules, from topic sentences to the discipline's own genre (lab report, technical report, case report, essay, business report, research report). Mechanics, APA/MLA referencing and academic vocabulary are included. Every rule and example comes from open-licensed textbooks.
+5. **Practise:** productive-struggle scaffolding. The learner tries first, then gets a guiding question, a hint, a real book example, and finally rewrites. Practice moves from recognise to repair to produce to apply. Every answer is assessed.
+6. **Grow:** levels per skill, a draft-by-draft comparison ("In your last paragraph you had no topic sentence; this time…"), and a hint-use trend that shows growing independence.
+
+**Teachers** type one plain-language request, such as "5 practice items on thesis statements for first-year Commerce students at Level 2". The app generates items from real excerpts, the Verifier checks them, and the teacher publishes them to their class.
+
+## Design principles
+
+- **Coach, never ghost-writer.** The app rewrites at most one sentence as a model. The learner always writes the rest.
+- **Grounded, not invented.** Teaching content comes from open-licensed books. Sources come from the database, not the model. If no suitable excerpt exists, the app says so.
+- **Mother tongue as a bridge.** Learners can think and ask in their own language. Replies are in simple English, because model-written Malayalam had spelling errors in testing.
+- **Honest feedback.** No generic praise. Praise only names a specific improvement.
+- **Visible reasoning.** A collapsible "How it decided" panel shows each step, agent and tool used.
+
+## Meta AI tools used
+
+| Tool | Where |
+|---|---|
+| **Muse Spark** (Meta Model API) | Diagnoser, Write feedback card, Learn and Practice Assessor, practice judging, Teacher Studio generation, and handwritten-paper scanning (vision) |
+| **Muse Voice Transcribe** | Voice input (realtime WebSocket), with the browser's built-in speech recognition as fallback, including for Malayalam |
+| **Muse Code** | Built the app, with a separate read-only Muse Code session acting as reviewer (builder and verifier pattern) |
+
+Twin replies, Learn cards and practice banks use templates and real book excerpts on purpose, so that nothing a learner reads as teaching content is invented by a model.
+
+## Safety and quality
+
+- A **Verifier** checks every model output before the learner sees it: quotes must exist in the learner's text, no complete answers, at most one sentence rewritten, right level, simple English, no generic praise, model examples on a different topic from the task.
+- Every model call has a **timeout, at most 2 retries, and a safe fallback**, so the app never hangs.
+- **License gate:** books with No-Derivatives (ND) licenses are excluded from the knowledge base.
+- **Privacy:** minimal profile data, no photos stored after scanning, and a working **Delete my data** button.
+- **[NUMBER] automated tests** (pytest).
+
+## Evaluation
+
+[ADD AFTER TESTING]
+
+- Diagnoser vs teacher: [N] paragraphs scored by a teacher on the 7-skill rubric; [X]% of Diagnoser scores were within one level of the teacher's.
+- Verifier: blocked [N] of [M] generated outputs; the most common reason was [REASON].
+- Student trial: [N] students. Example before and after: [ADD, with consent, names removed].
+
+## Tech stack
+
+React (Vite) frontend · FastAPI backend · ChromaDB knowledge base with local embeddings · SQLite learner store · Meta Model API
+
+## Run it locally
+
+Requirements: Python 3.12+, Node.js LTS, a Meta Model API key.
+
+```bash
+git clone https://github.com/bijumastc/VibeEduTwin.git
+cd VibeEduTwin
+
+# Backend
 python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install --no-cache-dir -r requirements.txt
+.venv\Scripts\activate          # Windows (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt
 ```
 
-(`--no-cache-dir`: this machine's pip HTTP cache is corrupted and makes
-pip hang; bypassing it installs normally.)
+Create a `.env` file in the project folder:
 
-First ingest downloads the ~83MB default embedding model once into
-`.chroma_cache/` (gitignored, stays inside the repo).
+```
+MODEL_API_KEY=your-meta-model-api-key
+DEMO_MODE=false
+```
 
-## 1. Add PDFs
+Download the open-licensed books listed in `manifest.json` into `data/knowledge/` (see the note in that folder), then:
 
-The guide PDFs are gitignored, so a fresh clone starts with an empty
-`data/knowledge/`. `data/knowledge/manifest.json` is the download list:
-41 openly licensed books with exact filenames and verified licenses.
-Get them from their open publishers — OpenStax (https://openstax.org),
-the Open Textbook Library (https://open.umn.edu), LibreTexts, BCcampus
-Pressbooks (https://pressbooks.bccampus.ca), eCampusOntario
-(https://ecampusontario.pressbooks.pub), and Writing Spaces
-(https://writingspaces.org) — save each PDF in `data/knowledge/` with
-the exact manifest filename, then ingest:
-
-```powershell
+```bash
 python scripts/ingest_knowledge.py --reset
+python learner_store.py
+uvicorn main:app --reload
 ```
 
-Filenames and licenses must match `data/knowledge/manifest.json`; the
-ingest refuses ND-licensed and unlisted files. See
-[data/knowledge/README.md](data/knowledge/README.md) and step 2 below.
+Frontend, in a second terminal:
 
-## Single-file version
-
-`knowledge_base.py` (repo root) does the whole pipeline in one commented
-file: read PDFs → clean → 400-word/50-overlap chunks → tag
-(`source, license, subject, skill`) → store in collection `knowledge_base`
-→ run the 5-question search test.
-
-```powershell
-python knowledge_base.py --reset
-```
-
-## Learner store
-
-`learner_store.py` (repo root) keeps per-student state: SQLite
-(`learners.db`: learners, skill_scores, drafts, event_log) plus one
-ChromaDB collection per learner (`learner_<id>_writing`) for past work.
-
-```powershell
-python learner_store.py   # sample test: 1 learner, scores, draft, memory search
-```
-
-## Backend API
-
-`main.py` serves the practice loop with FastAPI:
-
-```powershell
-.venv\Scripts\python.exe -m uvicorn main:app --reload
-```
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/drafts` | Save a learner paragraph |
-| POST | `/diagnose` | Score 7 skills, return weakest |
-| GET | `/practice?learner_id=1` | Set for weakest skill + level |
-| POST | `/practice/answers` | Score answers, bump skill if ≥80% |
-| POST | `/level-check` | Current levels + recent level-ups |
-| GET | `/growth?learner_id=1` | Scores for the growth chart |
-| POST | `/teacher/practice-sets` | Generate + verify a set |
-| GET | `/drafts?learner_id=1` | List drafts with feedback |
-| POST | `/twin/ask` | Short scaffolded twin reply |
-
-## Frontend app (mobile-first)
-
-`frontend/` is a Vite + React app: bottom nav (Home, Write, Practice,
-My Writing, My Growth), one-question-at-a-time practice, twin side panel
-on Write/Practice, growth chart that unlocks after the first level-up.
-
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Then open http://localhost:5173 in a browser. The backend must run too
-(`uvicorn main:app` from the repo root), and learner 1 must exist
-(run `python learner_store.py` once). Point at another backend with
-`VITE_API_URL` in `frontend/.env`.
+Open http://localhost:5173
 
-Diagnose/practice use simple heuristic logic for now (each scorer is one
-function in `main.py`); the twin system prompt is defined there for the
-Muse Spark step. Every endpoint logs to the event log ("How it decided").
+**Demo mode:** set `DEMO_MODE=true` for a scripted, reliable demo path. Run `python scripts/reset_demo.py` and restart the backend before each run.
 
-## 2. Ingest into ChromaDB
+## Honest limits
 
-```powershell
-python scripts/ingest_knowledge.py --reset
-```
+- Some PDF text extraction still contains damaged words.
+- Retrieval uses semantic search with metadata filters and keyword scoring, not full hybrid search.
+- Malayalam is accepted as input but not generated in replies.
+- Malayalam voice uses the browser's speech recognition, because Malayalam is not on Muse Voice Transcribe's documented language list.
+- When Muse Spark is slow, some features fall back to simpler template feedback.
 
-- Cleans headers, page numbers, index lines.
-- Splits into ~400-word chunks with 50-word overlap.
-- Tags: `source, chapter, license, subject, skill`.
-- Stores in `./chroma_db/`, collection `vibeedutwin_knowledge`.
-- Refuses files without an open license in the manifest.
+## Roadmap
 
-Note: the scripts use ChromaDB's Python segment backend
-(see `scripts/chroma_setup.py`) because the default Rust backend fails
-to open its database file on this machine (sqlite code 14).
+- A full 90-hour, 5-credit semester course (18 weeks, 5 modules, weekly checks and proficiency tests)
+- Hybrid keyword and vector retrieval with reranking
+- Deterministic cleanup of PDF text artifacts
+- A teacher-reviewed bank of curated excerpts
+- Llama Guard safety screening
+- Class views for teachers
+- WhatsApp delivery and a public demo link
 
-## 3. Test search
+## Licenses
 
-```powershell
-python scripts/test_search.py
-```
-
-Runs 5 sample student questions and prints top-3 hits with metadata.
-
-## 4. Unit tests
-
-```powershell
-python -m pytest tests/ -q
-```
+Code: [ADD YOUR CHOICE, e.g. MIT]. The knowledge base uses openly licensed textbooks; each lesson credits its source behind the ⓘ icon. Some sources are CC BY-NC-SA, so lessons adapted from them are shared under the same terms and for non-commercial use. Books are not included in this repository.

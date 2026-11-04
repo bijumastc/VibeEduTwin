@@ -15,3 +15,8 @@ frontend/dist/
 *.tmp
 
 pytest-of-*/
+
+*.db
+err_probe*
+*_staging.py
+lesson*.txt
