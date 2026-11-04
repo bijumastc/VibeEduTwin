@@ -1,19 +1,21 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, OpenModule } from '../api.js';
 
-// Home: exactly one next action. No chat box here.
-const ACTIONS = {
-  Paragraphing: 'write a topic sentence',
-  Grammar: 'fix verb endings',
-  Vocabulary: 'swap one weak word',
-  'Sentence structure': 'join two short sentences',
-  Argument: 'add one reason word',
-  'Using sources': 'name one source',
-  'Academic tone': 'remove one chatty word',
+// My Level: hero for new learners, writing-profile card after diagnosis.
+// Skill chips reuse the Learn module look; the next-win button deep-links
+// into the matching Learn module.
+const ORDER = ['Grammar', 'Vocabulary', 'Sentence structure', 'Paragraphing',
+  'Argument', 'Using sources', 'Academic tone'];
+
+const SKILL_MODULE = {
+  Grammar: 'mechanics',
+  Vocabulary: 'academic-vocabulary',
+  'Sentence structure': 'coherence-flow',
+  Paragraphing: 'topic-sentences',
+  Argument: 'thesis-statements',
+  'Using sources': 'using-sources',
+  'Academic tone': 'genre',
 };
-
-// Paragraph-family skills practise best by writing; the rest by drills.
-const GOES_TO_WRITE = new Set(['Paragraphing', 'Argument', 'Academic tone']);
 
 export default function Home({ go }) {
   const [state, setState] = useState({ loading: true });
@@ -32,12 +34,17 @@ export default function Home({ go }) {
   if (state.drafts.length === 0) {
     return (
       <div>
-        <h2>Let&apos;s begin</h2>
+        <h2>My Level</h2>
         <div className="card tint">
-          <div className="card-title">Write a short paragraph so your twin can understand how you write</div>
-          <p className="muted">Your twin will find your weakest skill.</p>
+          <div className="card-title">Discover your writing level ✍️</div>
+          <p>Write 4-5 lines on any topic. In one minute, your twin shows what you already do well and your next win.</p>
         </div>
-        <button className="btn" onClick={() => go('write')}>Start</button>
+        <button className="btn" onClick={() => go('write')}>Find my level</button>
+        <div>
+          <button className="linklike" onClick={() => go('write')}>Speak it</button>
+          {' · '}
+          <button className="linklike" onClick={() => go('write')}>Scan my notebook</button>
+        </div>
         <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
       </div>
     );
@@ -45,41 +52,61 @@ export default function Home({ go }) {
 
   const scores = state.growth.scores || {};
   const names = Object.keys(scores);
-  if (names.length === 0) {
+  if (names.length === 0 || !state.growth.next_win) {
     return (
       <div>
-        <h2>Your next step</h2>
+        <h2>My Level</h2>
         <div className="card tint">
           <div className="card-title">Your paragraph is waiting</div>
           <p className="muted">Submit it so your twin can diagnose it.</p>
         </div>
-        <button className="btn" onClick={() => go('write')}>Start</button>
+        <button className="btn" onClick={() => go('write')}>Find my level</button>
         <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
       </div>
     );
   }
 
-  const weakest = names.reduce((a, b) => (scores[a] <= scores[b] ? a : b));
+  const levels = state.growth.levels || {};
+  const { strongest, next_win } = state.growth;
   const leveled = state.levels.leveled_up || [];
-  const latest = state.drafts[state.drafts.length - 1].content || '';
-  const firstLine = latest.split(/(?<=[.!?])\s+/)[0] || latest;
+  const openModule = (moduleId) => {
+    OpenModule.set(moduleId);
+    go('learn');
+  };
 
   return (
     <div>
-      <h2>Your next step</h2>
+      <h2>My Level</h2>
       {leveled.length > 0 && (
         <div className="levelup">Level up in {leveled.join(', ')}! See My Growth.</div>
       )}
       <div className="card tint">
-        <div className="card-title">
-          Fix your weakest skill: {ACTIONS[weakest] || 'practise a little'}
-        </div>
-        <p className="muted">{weakest} is at Level {(state.growth.levels || {})[weakest] || 1} of 5.</p>
-        <p>Your line: &ldquo;{firstLine}&rdquo;</p>
+        <div className="card-title">Your writing profile</div>
+        {ORDER.filter((s) => levels[s] !== undefined).map((skill) => (
+          <button
+            key={skill}
+            className="btn secondary option-btn"
+            onClick={() => openModule(SKILL_MODULE[skill])}
+          >
+            {skill}
+            <span className="level-chip">Level {levels[skill]} of 5</span>
+          </button>
+        ))}
       </div>
-      <button className="btn" onClick={() => go(GOES_TO_WRITE.has(weakest) ? 'write' : 'practice')}>
-        Start
-      </button>
+      <div className="card">
+        <p><strong>You do well: {strongest.skill}</strong></p>
+        <p className="muted">{strongest.reason}</p>
+      </div>
+      <div className="card">
+        <p><strong>Your next win: {next_win.action}</strong></p>
+        {next_win.quote && <p className="muted">&ldquo;{next_win.quote}&rdquo;</p>}
+        <button className="btn" onClick={() => openModule(SKILL_MODULE[next_win.skill])}>
+          Start my next win (5 min)
+        </button>
+        <div>
+          <button className="linklike" onClick={() => go('write')}>Check my level again</button>
+        </div>
+      </div>
       <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
     </div>
   );

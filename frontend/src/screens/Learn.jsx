@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, OpenModule } from '../api.js';
 import LessonView from '../components/LessonView.jsx';
 
 // Learn: curriculum of 6 disciplines x 9 ordered modules. The learner's own
@@ -17,19 +17,27 @@ export default function Learn({ go }) {
       .then((res) => {
         setData(res);
         setDiscipline(res.discipline);
+        const pending = OpenModule.consume();
+        const modules = (res.disciplines.find((d) => d.name === res.discipline)
+          || {}).modules || [];
+        if (pending && modules.some((m) => m.id === pending)) {
+          openModuleFor(res.discipline, pending);
+        }
       })
       .catch((err) => setError(err.message));
   }, []);
 
-  const openModule = (moduleId) => {
+  const openModuleFor = (disc, moduleId) => {
     setError('');
     setLoadingContent(true);
     setContent(null);
-    api.moduleContent(discipline, moduleId)
+    api.moduleContent(disc, moduleId)
       .then((res) => setContent(res))
       .catch((err) => setError(err.message))
       .finally(() => setLoadingContent(false));
   };
+
+  const openModule = (moduleId) => openModuleFor(discipline, moduleId);
 
   const pickDiscipline = (name) => {
     setDiscipline(name);

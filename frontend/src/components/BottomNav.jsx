@@ -1,6 +1,6 @@
 // Bottom navigation: exactly the 5 tabs, text labels, active pill.
 const TABS = [
-  { id: 'home', label: 'Home' },
+  { id: 'home', label: 'My Level' },
   { id: 'write', label: 'Write' },
   { id: 'learn', label: 'Learn' },
   { id: 'practice', label: 'Practice' },

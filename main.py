@@ -256,6 +256,54 @@ def twin_note(weakest: str) -> str:
     return f"You will get this: start by {step}."
 
 
+# One friendly action per skill for the Home "next win" card.
+NEXT_WIN_ACTIONS = {
+    "Grammar": "Fix one verb ending",
+    "Vocabulary": "Swap one vague word for an exact one",
+    "Sentence structure": "Join two short lines with 'because'",
+    "Paragraphing": "Make your first sentence say your main idea",
+    "Argument": "Add one reason with 'because'",
+    "Using sources": "Name one source",
+    "Academic tone": "Swap one chatty word for a calm one",
+}
+
+# Signs the paragraph tries to use evidence or facts.
+_EVIDENCE_SIGNS = ("according to", "says", "said", "study", "studies",
+                   "research", "report", "reports", "book", "percent", "%",
+                   "fact", "facts", "data", "survey")
+
+
+def _tries_evidence(text: str) -> bool:
+    """True when the paragraph attempts evidence: facts, figures, sources."""
+    lowered = (text or "").lower()
+    return bool(re.search(r"\d", lowered)) or any(
+        sign in lowered for sign in _EVIDENCE_SIGNS)
+
+
+def _first_words(text: str, n: int) -> str:
+    """First n words; an ellipsis marks a cut (quotes stay short)."""
+    words = (text or "").split()
+    if len(words) <= n:
+        return " ".join(words)
+    return " ".join(words[:n]) + " …"
+
+
+def next_win_skill(levels: dict[str, int], text: str) -> str:
+    """The Home focus skill: weakest of the six craft skills first.
+
+    Using sources wins only when it is the weakest AND the paragraph
+    tries evidence or facts, or every other skill is already Level 3+.
+    """
+    six = [s for s in SKILLS if s != "Using sources"]
+    weakest_six = min(six, key=lambda s: (levels.get(s, 1),
+                                          SKILLS.index(s)))
+    others_high = all(levels.get(s, 1) >= 3 for s in six)
+    if levels.get("Using sources", 1) <= levels.get(weakest_six, 1) \
+            and (_tries_evidence(text) or others_high):
+        return "Using sources"
+    return weakest_six
+
+
 # Collection written by the scripts pipeline (see scripts/ingest_knowledge.py).
 # study_material tries the single-file pipeline's collection first, then this.
 SCRIPTS_KB_COLLECTION = "vibeedutwin_knowledge"
@@ -5265,8 +5313,25 @@ def get_growth(learner_id: int):
                                       "evidence": row.get("evidence")}
         history.setdefault(row["skill_name"], []).append(
             {"score": row["score"], "date": row["date"]})
+    strongest = next_win = None
+    if levels:
+        best = max(SKILLS, key=lambda s: levels.get(s, 1))
+        drafts = store.get_drafts(learner_id)
+        latest = drafts[-1]["content"] if drafts else ""
+        win = next_win_skill(levels, latest)
+        evidence = (details.get(win) or {}).get("evidence") or ""
+        if not evidence and latest:
+            sents = _text_sentences(latest)
+            evidence = sents[0] if sents else latest
+        strongest = {
+            "skill": best,
+            "reason": (details.get(best) or {}).get("reason")
+            or "Your strongest skill right now."}
+        next_win = {"skill": win, "action": NEXT_WIN_ACTIONS[win],
+                    "quote": _first_words(evidence, 12)}
     return {"learner_id": learner_id, "scores": scores, "levels": levels,
-            "details": details, "history": history}
+            "details": details, "history": history,
+            "strongest": strongest, "next_win": next_win}
 
 
 def independence(learner_id: int) -> dict:

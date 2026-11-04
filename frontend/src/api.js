@@ -68,6 +68,13 @@ export const api = {
     `${API_URL.replace(/^http/, 'ws')}/ws/transcribe?learner_id=${learnerId || LEARNER_ID}`,
 };
 
+// Deep-link into one Learn module: set before go('learn'), consumed on load.
+let pendingModule = null;
+export const OpenModule = {
+  set: (id) => { pendingModule = id; },
+  consume: () => { const m = pendingModule; pendingModule = null; return m; },
+};
+
 // Growth chart unlocks only after the first real level-up.
 const FLAG = 'vibe_leveled_up';
 export const LeveledUp = {
