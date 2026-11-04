@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { api } from '../api.js';
 import CompactLesson from '../components/CompactLesson.jsx';
+import FeedbackCard from '../components/FeedbackCard.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
 import HowScored from '../components/HowScored.jsx';
 import SkillBars from '../components/SkillBars.jsx';
@@ -104,6 +105,19 @@ export default function Write({ go }) {
     setScanned(false);
   };
 
+  // Rewrite flow: back to the text box with the paragraph kept, so the
+  // next submit compares the new version with this one.
+  const rewrite = () => {
+    setResult(null);
+    setError('');
+    setScanned(false);
+  };
+
+  const skillDetails = {};
+  (result?.skills_details || []).forEach((entry) => {
+    skillDetails[entry.skill] = entry;
+  });
+
   return (
     <div>
       <h2>Write</h2>
@@ -152,11 +166,13 @@ export default function Write({ go }) {
         <>
           <div className="card tint">
             <div className="card-title">Weakest skill: {result.weakest}</div>
-            <p className="muted">Level {result.level}</p>
+            <p className="muted">Level {result.level} of 5</p>
+            {result.notice && <p className="muted">{result.notice}</p>}
           </div>
           <div className="card">
-            <SkillBars scores={result.scores} weakest={result.weakest} levels={result.level_changes} />
+            <SkillBars scores={result.scores} weakest={result.weakest} levels={result.level_changes} details={skillDetails} />
           </div>
+          <FeedbackCard feedback={result.feedback} onRewrite={rewrite} />
           <HowScored />
           <div className="card accent-soft">
             <div className="card-title">Your twin says</div>
@@ -171,6 +187,7 @@ export default function Write({ go }) {
           {result.learn && (
             <CompactLesson
               title={`Learn: ${result.learn.skill}`}
+              connect={result.learn.connect}
               idea={result.learn.idea}
               example={result.learn.example}
               basedOn={result.learn.based_on}

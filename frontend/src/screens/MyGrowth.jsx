@@ -53,7 +53,7 @@ export default function MyGrowth({ go }) {
       <h2>My Growth</h2>
       {names.length === 0 && (
         <div className="card tint">
-          <div className="card-title">No scores yet</div>
+          <div className="card-title">No levels yet</div>
           <p className="muted">Write a paragraph to get your first diagnosis.</p>
         </div>
       )}
@@ -61,15 +61,15 @@ export default function MyGrowth({ go }) {
         <div className="card tint">
           <div className="card-title">Your chart unlocks at level 2</div>
           <p className="muted">
-            Current focus is {weakest} ({Math.round(scores[weakest])}/100).
-            Score {80}%+ in practice to level up.
+            Current focus is {weakest} (Level {(state.growth.levels || {})[weakest] || 1} of 5).
+            Pass two practice sets to level up.
           </p>
         </div>
       )}
       {names.length > 0 && LeveledUp.get() && (
         <>
           <div className="card">
-            <SkillBars scores={scores} weakest={weakest} />
+            <SkillBars scores={scores} weakest={weakest} levels={state.growth.levels} details={state.growth.details} />
           </div>
           <div className="card tint">
             {Object.keys(levels).map((skill) => (
@@ -118,7 +118,7 @@ export default function MyGrowth({ go }) {
       )}
       {confirming && (
         <div className="card warn">
-          <p>Delete all your drafts, scores, and history? This cannot be undone.</p>
+          <p>Delete all your drafts, levels, and history? This cannot be undone.</p>
           <button className="btn" onClick={remove}>Yes, delete everything</button>
           <div style={{ height: 10 }} />
           <button className="btn secondary" onClick={() => setConfirming(false)}>

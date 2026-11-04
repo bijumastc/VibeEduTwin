@@ -147,6 +147,7 @@ input[type="text"] {
 
 /* Skill bars */
 .skill-row { margin-bottom: 10px; }
+.skill-why { margin: 4px 0 0; font-size: 13px; }
 
 .skill-top {
   display: flex;

@@ -77,6 +77,17 @@ structurally checked at serve time and failures are excluded.
   Practice answers use the same checklist with the chosen option as the
   learner's words; rejected drafts fall back to templates.
 
+### Feedback cards (`feedback`)
+
+- `quotes-in-text`: every quote (strength, problems, model before-line)
+  must exist in the learner's paragraph.
+- `one-rewrite`: the model rewrites at most one sentence, as one sentence,
+  different from the before-line.
+- `simple-english`: no formal words, no sentence over 25 words.
+- `no-generic-praise`: none of "great job", "excellent", "amazing".
+  Rejected Spark drafts retry (max 2 regens), then the deterministic
+  template card (two problems, no rewrite) is served.
+
 ## Rubric
 
 The fixed 7-skill rubric, one short line per level. Mirrored exactly in
@@ -143,11 +154,13 @@ served at `GET /rubric` for the "How I'm scored" link.
 
 Scripted recording flow. Demo mode is on when `DEMO_MODE=true` in `.env`
 (off by default); the app shows a small "Demo mode" label. In demo mode
-only Teacher Studio uses live Muse Spark: diagnosis, the twin reply, the
-scaffold Assessor, and practice judging are fixed or deterministic.
-`scripts/reset_demo.py` clears the demo learner (id 1) so the flow can be
-recorded several times; restart the backend too (issued sets and scaffold
-attempts live in memory).
+only the exact weak and improved paragraphs use the fixed script; any
+other text calls Muse Spark and Muse Voice Transcribe live (diagnosis,
+feedback, scan, voice), like Teacher Studio, with the usual fallback.
+The twin reply, the scaffold Assessor, and practice judging stay fixed
+or deterministic. `scripts/reset_demo.py` clears the demo learner (id 1)
+so the flow can be recorded several times; restart the backend too
+(issued sets and scaffold attempts live in memory).
 
 Demo learner: Sciences discipline, no history.
 
@@ -172,8 +185,11 @@ Fixed diagnosis (level, reason, evidence quote):
   "Also the students also should know."
 - Vocabulary 2: Mostly everyday words. "very big problem"
 
-Weakest skill: Paragraphing. Any other paragraph in demo mode is scored
-by the heuristic Diagnoser (no Spark).
+Weakest skill: Paragraphing. Any other paragraph in demo mode is
+diagnosed and given feedback by live Muse Spark (heuristic + template
+fallback without a key). Fixed feedback cards are served for the weak
+paragraph (first sentence as the main problem, one model rewrite) and
+the improved paragraph (sources and long lines as the two problems).
 
 Fixed twin response (simple English only), served when the demo
 learner's latest draft is the weak paragraph (the fixed script bypasses

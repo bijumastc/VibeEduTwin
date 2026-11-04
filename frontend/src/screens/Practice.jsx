@@ -16,13 +16,14 @@ const KIND_LABELS = {
 
 // Level-up screen: the move (Skill Level x → y) with the growth chart.
 function LevelUpCard({ ups, go }) {
-  const [scores, setScores] = useState(null);
+  const [growth, setGrowth] = useState(null);
 
   useEffect(() => {
-    api.growth().then((g) => setScores(g.scores || {})).catch(() => setScores({}));
+    api.growth().then(setGrowth).catch(() => setGrowth({ scores: {} }));
   }, []);
 
-  const names = Object.keys(scores || {});
+  const scores = (growth && growth.scores) || {};
+  const names = Object.keys(scores);
   const weakest = names.length > 0
     ? names.reduce((a, b) => (scores[a] <= scores[b] ? a : b))
     : null;
@@ -34,7 +35,9 @@ function LevelUpCard({ ups, go }) {
           {up.skill} Level {up.from} → {up.to}
         </div>
       ))}
-      {scores && names.length > 0 && <SkillBars scores={scores} weakest={weakest} />}
+      {growth && names.length > 0 && (
+        <SkillBars scores={scores} weakest={weakest} levels={growth.levels} details={growth.details} />
+      )}
       <button className="btn secondary" onClick={() => go('growth')}>See my growth</button>
     </div>
   );
@@ -113,8 +116,8 @@ export default function Practice({ go }) {
           <LevelUpCard ups={result.level_ups} go={go} />
         )}
         <div className="card tint">
-          <div className="score-big">{result.correct}/{result.total}</div>
-          <p className="muted">{result.accuracy}% correct · {result.skill}</p>
+          <div className="score-big">{result.correct} of {result.total} right</div>
+          <p className="muted">{result.skill} · Level {result.level} of 5</p>
         </div>
         {result.details.filter((d) => !d.correct).map((d) => (
           <div className="card warn" key={d.id}>

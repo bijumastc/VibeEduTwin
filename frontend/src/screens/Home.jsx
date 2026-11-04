@@ -56,7 +56,7 @@ export default function Home({ go }) {
         <div className="card-title">
           Fix your weakest skill: {ACTIONS[weakest] || 'practise a little'}
         </div>
-        <p className="muted">{weakest} is at {Math.round(scores[weakest])}/100.</p>
+        <p className="muted">{weakest} is at Level {(state.growth.levels || {})[weakest] || 1} of 5.</p>
       </div>
       <button className="btn" onClick={() => go(GOES_TO_WRITE.has(weakest) ? 'write' : 'practice')}>
         Start

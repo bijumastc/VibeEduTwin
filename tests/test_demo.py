@@ -1,4 +1,4 @@
-"""Demo mode: fixed script, no live Spark except Teacher Studio."""
+"""Demo mode: fixed script; other text calls Muse live like Teacher Studio."""
 import json
 import subprocess
 import sys
@@ -72,6 +72,7 @@ def test_demo_weak_paragraph_gets_fixed_diagnosis(demo_on, monkeypatch):
             main.DIAGNOSE_LEVEL_SCORES[entry["level"]], skill
     assert res["weakest"] == "Paragraphing"
     assert res["level"] == 1
+    assert res["notice"] is None  # scripted path: no estimate note
     assert res["comparison"] == "This is your starting point."
     logged = [r for r in store.get_events(learner_id)
               if r["tool"] == "diagnose-demo"]
@@ -101,16 +102,56 @@ def test_demo_improved_paragraph_compares_one_to_two(demo_on):
     assert res["scores"]["Paragraphing"] == 30  # Level 2 band
 
 
-def test_demo_other_text_uses_heuristic_without_spark(demo_on, monkeypatch):
-    def boom(messages, temperature=None):
-        raise AssertionError("demo must not call Spark")
+def test_demo_other_text_uses_live_spark(demo_on, monkeypatch):
+    import json
+    text = "My favourite festival is Onam. People wear new clothes."
+    seen = []
 
+    def fake_chat(messages, temperature=None):
+        seen.append(messages)
+        if "give feedback" in messages[0]["content"]:
+            return json.dumps({
+                "strength": None,
+                "problems": [
+                    {"quote": "My favourite festival is Onam.",
+                     "wrong": "No reason is given.",
+                     "why": "Readers ask why it matters.",
+                     "fix": "Add because and one reason."},
+                    {"quote": "People wear new clothes.",
+                     "wrong": "No source is named.",
+                     "why": "Readers trust named sources.",
+                     "fix": "Say who told you this."}],
+                "model": None,
+                "your_turn": "Fix these two lines, then rewrite."})
+        return json.dumps({
+            skill: {"level": 3, "reason": f"{skill} checked.",
+                    "evidence": "People wear new clothes."}
+            for skill in main.SKILLS})
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", fake_chat)
+    learner_id = _learner(demo_on)
+    res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id,
+                                             content=text))
+    assert len(seen) == 2  # diagnosis + feedback, live in demo mode
+    assert res["feedback"]["problems"][0]["quote"] == \
+        "My favourite festival is Onam."
+
+
+def test_demo_other_text_falls_back_without_key(demo_on, monkeypatch):
+    def boom(messages, temperature=None):
+        raise AssertionError("no key: must not call Spark")
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
     monkeypatch.setattr(main, "_spark_chat", boom)
     learner_id = _learner(demo_on)
     text = "My favourite festival is Onam. People wear new clothes."
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id,
                                              content=text))
-    assert res["scores"] == main.diagnose_text(text)
+    assert res["scores"] == main._cap_fallback_scores(
+        text, main.diagnose_text(text))
+    assert len(res["feedback"]["problems"]) == 2
+    assert res["feedback"]["model"] is None  # template has no rewrite
 
 
 # --- Fixed twin reply ----------------------------------------------------------

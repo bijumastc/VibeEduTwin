@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS skill_scores (
     learner_id INTEGER NOT NULL REFERENCES learners(id),
     skill_name TEXT NOT NULL,
     score REAL NOT NULL,
+    reason TEXT,
+    evidence TEXT,
     date TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS drafts (
@@ -107,6 +109,7 @@ def _connect() -> sqlite3.Connection:
     _ensure_discipline_column(conn)  # migrate pre-discipline databases
     _migrate_discipline_values(conn)  # map pre-curriculum names to current ones
     _ensure_draft_source_column(conn)  # migrate pre-scan databases
+    _ensure_skill_detail_columns(conn)  # migrate pre-feedback databases
     return conn
 
 
@@ -139,6 +142,15 @@ def _ensure_draft_source_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE drafts ADD COLUMN source TEXT NOT NULL DEFAULT 'typed'"
         )
+
+
+def _ensure_skill_detail_columns(conn: sqlite3.Connection) -> None:
+    """Add skill_scores.reason/evidence (older rows keep NULL = no detail)."""
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(skill_scores)")]
+    if "reason" not in columns:
+        conn.execute("ALTER TABLE skill_scores ADD COLUMN reason TEXT")
+    if "evidence" not in columns:
+        conn.execute("ALTER TABLE skill_scores ADD COLUMN evidence TEXT")
 
 
 # --- Learners -----------------------------------------------------------------
@@ -218,15 +230,23 @@ def delete_writing_samples(learner_id: int) -> None:
 
 
 # --- Skill scores ---------------------------------------------------------------
-def save_skill_scores(learner_id: int, scores_dict: dict) -> None:
-    """Save one snapshot of {skill_name: score} stamped with today's date."""
+def save_skill_scores(learner_id: int, scores_dict: dict,
+                      details: dict | None = None) -> None:
+    """Save one snapshot of {skill_name: score} stamped with today's date.
+
+    details optionally carries {skill_name: {"reason", "evidence"}} from the
+    diagnosis; bumps without details store NULL (shown as level only).
+    """
     today = date.today().isoformat()
-    rows = [(learner_id, skill, float(score), today)
+    details = details or {}
+    rows = [(learner_id, skill, float(score),
+             (details.get(skill) or {}).get("reason"),
+             (details.get(skill) or {}).get("evidence"), today)
             for skill, score in scores_dict.items()]
     with _connect() as conn:
         conn.executemany(
-            "INSERT INTO skill_scores (learner_id, skill_name, score, date)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO skill_scores (learner_id, skill_name, score, reason,"
+            " evidence, date) VALUES (?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -235,7 +255,7 @@ def get_skill_scores(learner_id: int) -> list[dict]:
     """Return all score snapshots for a learner, oldest first."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT skill_name, score, date FROM skill_scores"
+            "SELECT skill_name, score, reason, evidence, date FROM skill_scores"
             " WHERE learner_id = ? ORDER BY date, id",
             (learner_id,),
         ).fetchall()

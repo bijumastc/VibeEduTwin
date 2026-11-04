@@ -53,9 +53,9 @@ import learner_store as store
 # Used by every LLM call once Muse Spark is wired in. The twin speaks as the
 # learner's future self, guides instead of answering, in simple English only.
 TWIN_SYSTEM_PROMPT = (
-    "You are the learner's future self: a confident student who once found "
-    "English writing hard and now writes well. Speak warmly, in first person, "
-    "as someone who remembers the struggle. Reply ONLY in simple, short "
+    "You are the learner's future self: a confident student who writes well. "
+    "Speak warmly, in second person, with specific next steps. Never pretend "
+    "you shared their struggle. Reply ONLY in simple, short "
     "English: basic words, short sentences. Never write in Malayalam or any "
     "other language. Every word you write must be simple English. "
     "NEVER write full answers, "
@@ -238,12 +238,22 @@ def weakest_skill(scores: dict[str, float]) -> tuple[str, int]:
     return skill, level_for_score(scores.get(skill, 0))
 
 
+# Future-self next steps: specific, forward-looking, no shared struggle.
+TWIN_NEXT_STEPS = {
+    "Grammar": "checking the verbs in your first sentence",
+    "Vocabulary": "replacing one vague word like 'nice'",
+    "Sentence structure": "joining two short lines with 'and'",
+    "Paragraphing": "fixing the first sentence",
+    "Argument": "adding one reason with 'because'",
+    "Using sources": "naming where one idea came from",
+    "Academic tone": "replacing one chatty word",
+}
+
+
 def twin_note(weakest: str) -> str:
-    """Short future-self note in the twin's voice (template until LLM lands)."""
-    return (
-        f"I found {weakest.lower()} hard too. "
-        f"Let's fix one small part today."
-    )
+    """Short future-self note: specific next step, never shared struggle."""
+    step = TWIN_NEXT_STEPS.get(weakest, TWIN_NEXT_STEPS["Paragraphing"])
+    return f"You will get this: start by {step}."
 
 
 # Collection written by the scripts pipeline (see scripts/ingest_knowledge.py).
@@ -1344,12 +1354,12 @@ LESSON_IDEA_CLAIMS = {
 }
 
 LESSON_WHY = {
-    "topic-sentences": "I open with one clear line. My reader knows where we go.",
-    "thesis-statements": "My one-line view keeps my whole piece on track.",
-    "developing-paragraphs": "I prove each line before I move on.",
-    "coherence-flow": "I link every line to the next. My reader never gets lost.",
-    "using-sources": "I name each source I use. My work earns trust.",
-    "genre": "I learned the {genre} shape once. Now each {genre} follows it.",
+    "topic-sentences": "You will open with one clear line. Start by naming your topic first.",
+    "thesis-statements": "You will hold your piece on one line. Start by stating your view in one sentence.",
+    "developing-paragraphs": "You will prove each line before you move on. Start by checking that one line proves the first.",
+    "coherence-flow": "You will link every line to the next. Start by adding one linking word.",
+    "using-sources": "You will name each source you use. Start by adding one name.",
+    "genre": "You will follow the {genre} shape each time. Start by writing one part in its order.",
 }
 
 
@@ -2322,9 +2332,27 @@ DIAGNOSE_RUBRIC = {
 SPARK_DIAGNOSE_SYSTEM = (
     "You score a learner's paragraph for a first-year Indian undergraduate. "
     "Reply with a JSON object only, no other text: one key per skill, each "
-    "with level (1-5 against the rubric below), reason (one short sentence), "
+    "with level (1-5 against the rubric below), reason (one short sentence "
+    "in simple English: basic words), "
     "and evidence (exact words copied from the paragraph). Judge only what "
-    "is written; never invent facts.")
+    "is written; never invent facts. Never praise in general words.")
+
+# Formal words that fail the simple-English check on model-written reasons.
+COMPLEX_WORDS = ("moreover", "furthermore", "consequently", "subsequently",
+                 "notwithstanding", "henceforth", "hereby", "herein",
+                 "thereof", "albeit", "utilize", "utilise", "facilitate",
+                 "paradigm", "plethora", "delineate", "elucidate",
+                 "cognizant", "methodology", "dichotomy")
+
+
+def _uses_simple_english(text: str) -> bool:
+    """Rough check: no formal words, no sentence over 25 words."""
+    lowered = (text or "").lower()
+    if any(re.search(r"\b" + re.escape(w) + r"\b", lowered)
+           for w in COMPLEX_WORDS):
+        return False
+    return all(len(s.split()) <= 25
+               for s in re.split(r"[.!?]+", text or "") if s.strip())
 
 # Spark levels map to band midpoints so level_for_score round-trips exactly.
 DIAGNOSE_LEVEL_SCORES = {1: 10, 2: 30, 3: 50, 4: 70, 5: 90}
@@ -2363,6 +2391,8 @@ def _validate_diagnosis(data, text: str) -> dict | None:
             return None
         if " ".join(evidence.split()) not in flat:
             return None
+        if _has_generic_praise(reason) or not _uses_simple_english(reason):
+            return None
         fields[skill] = {"level": level, "reason": reason,
                          "evidence": evidence}
     return fields
@@ -2370,8 +2400,12 @@ def _validate_diagnosis(data, text: str) -> dict | None:
 
 def _diagnose_with_spark(learner_id: int, text: str,
                          discipline: str) -> dict | None:
-    """Levels + reasons from Spark (None when unusable after retries)."""
-    if _demo_mode() or _model_api_key() is None:
+    """Levels + reasons from Spark (None when unusable after retries).
+
+    Live in demo mode too: the scripted paragraphs never reach this helper
+    (post_diagnose branches first), so any other text gets live Spark.
+    """
+    if _model_api_key() is None:
         return None
     messages = _diagnose_messages(text, discipline)
     for _ in range(1 + SPARK_MAX_REGENS):
@@ -2387,7 +2421,9 @@ def _diagnose_with_spark(learner_id: int, text: str,
 
 # --- Demo mode (fixed script from the Demo kit in docs/plan.md) ----------------
 # On when DEMO_MODE=true in the environment or backend .env (off by default).
-# Only Teacher Studio uses live Muse Spark in demo mode.
+# Only the exact scripted weak/improved paragraphs use fixed output; every
+# other text (diagnose, feedback, scan, voice) calls Muse live, like Teacher
+# Studio, with the usual template fallback.
 def _demo_mode() -> bool:
     return (_env_key("DEMO_MODE") or "").strip().lower() in ("true", "1", "yes")
 
@@ -2503,6 +2539,286 @@ def _demo_produce_fields(text: str) -> dict:
             "next_action": ("Write one formal sentence stating a single main "
                             "idea about plastic waste in rivers."),
             "score": 0}
+
+
+# --- Feedback on your paragraph --------------------------------------------------
+_LINKERS = ("and", "but", "because", "so", "therefore", "however", "then")
+_CLAIM_MARKERS = ("because", "so", "therefore", "should", "for example",
+                  "since")
+_SOURCE_MARKERS = ("according to", "studies", "study shows", "research",
+                    "says", "said")
+_COMMON_WORDS = {"the", "a", "an", "and", "or", "but", "to", "of", "in",
+                 "on", "is", "are", "was", "were", "it", "its", "i", "you",
+                 "we", "they", "he", "she", "s", "t"}
+
+
+def _text_sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip())
+            if s.strip()]
+
+
+def _skill_evidence(skill: str, text: str) -> str:
+    """In-text quote showing the skill at work (fallback path)."""
+    sents = _text_sentences(text)
+    first = sents[0] if sents else text.strip()
+    if skill == "Paragraphing":
+        return first  # the (non-)topic sentence itself
+    if skill == "Grammar":
+        for sent in sents:
+            if not sent[:1].isupper() or not re.search(r"[.!?]$", sent):
+                return sent
+        return first
+    if skill == "Vocabulary":
+        words = [w for w in re.findall(r"[A-Za-z']+", text.lower())
+                 if w not in _COMMON_WORDS]
+        if words:
+            common = max(sorted(set(words)), key=words.count)
+            for sent in sents:
+                if re.search(r"\b" + re.escape(common) + r"\b", sent.lower()):
+                    return sent
+        return first
+    if skill == "Sentence structure":
+        for sent in sents:
+            if any(re.search(r"\b" + link + r"\b", sent.lower())
+                   for link in _LINKERS):
+                return sent
+        for sent in sents:
+            if len(sent.split()) < 6 or len(sent.split()) > 25:
+                return sent
+        return first
+    if skill == "Argument":
+        for sent in sents:
+            if any(m in sent.lower() for m in _CLAIM_MARKERS):
+                return sent
+        return first
+    if skill == "Using sources":
+        for sent in sents:
+            if any(m in sent.lower() for m in _SOURCE_MARKERS) or '"' in sent:
+                return sent
+        return first
+    if skill == "Academic tone":
+        for sent in sents:
+            if any(re.search(r"\b" + re.escape(w) + r"\b", sent.lower())
+                   for w in INFORMAL_WORDS):
+                return sent
+        return first
+    return first
+
+
+def _heuristic_details(text: str, scores: dict) -> dict:
+    """Per-skill level + rubric reason + in-text evidence (fallback path)."""
+    details = {}
+    for skill in SKILLS:
+        level = level_for_score(scores[skill])
+        details[skill] = {"level": level,
+                          "reason": DIAGNOSE_RUBRIC[skill][level - 1],
+                          "evidence": _skill_evidence(skill, text)}
+    return details
+
+
+SPARK_FEEDBACK_SYSTEM = (
+    "You give feedback on a learner's paragraph for a first-year Indian "
+    "undergraduate. Reply with a JSON object only, no other text. Use "
+    "simple English: basic words, short lines. Use no emojis. Never praise "
+    "in general words like 'great job', 'excellent' or 'amazing'. Quote "
+    "the learner's exact words.")
+
+
+def _feedback_messages(text: str, weakest_two: list) -> list[dict]:
+    """Prompt: the paragraph plus its two weakest skills."""
+    user = (f"Paragraph: {text} The two weakest skills are "
+            f"{weakest_two[0]} and {weakest_two[1]}. Write strength (one "
+            f"real strength quoting their words, or null when nothing is "
+            f"good), problems (the two most important problems, each with "
+            f"quote = exact words from the paragraph, wrong = what is "
+            f"wrong, why = why it matters to a reader, fix = how to fix "
+            f"it), model (rewrite exactly ONE of their sentences: before = "
+            f"their sentence word-for-word, after = your improved version "
+            f"as one sentence, changed = one line on what changed), "
+            f"your_turn (one line asking them to fix the other lines the "
+            f"same way).")
+    return [{"role": "system", "content": SPARK_FEEDBACK_SYSTEM},
+            {"role": "user", "content": user}]
+
+
+def _validate_feedback_shape(data) -> dict | None:
+    """Feedback keys present with the right types; model edits one sentence."""
+    if not isinstance(data, dict):
+        return None
+    strength = data.get("strength")
+    if strength is not None:
+        if not isinstance(strength, dict):
+            return None
+        if not (strength.get("quote") or "").strip():
+            return None
+        if not (strength.get("line") or "").strip():
+            return None
+    problems = data.get("problems")
+    if not isinstance(problems, list) or len(problems) != 2:
+        return None
+    for problem in problems:
+        if not isinstance(problem, dict):
+            return None
+        for key in ("quote", "wrong", "why", "fix"):
+            if not (problem.get(key) or "").strip():
+                return None
+    model = data.get("model")
+    if model is not None:
+        if not isinstance(model, dict):
+            return None
+        before = (model.get("before") or "").strip()
+        after = (model.get("after") or "").strip()
+        changed = (model.get("changed") or "").strip()
+        if not before or not after or not changed:
+            return None
+        if len([s for s in re.split(r"[.!?]+", after) if s.strip()]) != 1:
+            return None
+    your_turn = (data.get("your_turn") or "").strip()
+    if not your_turn:
+        return None
+    clean = lambda part, keys: {k: (part[k] or "").strip() for k in keys} \
+        if part is not None else None
+    return {"strength": clean(strength, ("quote", "line")),
+            "problems": [clean(p, ("quote", "wrong", "why", "fix"))
+                         for p in problems],
+            "model": clean(model, ("before", "after", "changed")),
+            "your_turn": your_turn}
+
+
+def _feedback_verify_payload(feedback: dict, text: str) -> dict:
+    """Model-written lines plus quotes, for the feedback checklist."""
+    quotes = [p["quote"] for p in feedback["problems"]]
+    fields = []
+    if feedback.get("strength"):
+        quotes.append(feedback["strength"]["quote"])
+        fields.append(feedback["strength"]["line"])
+    for problem in feedback["problems"]:
+        fields.extend([problem["wrong"], problem["why"], problem["fix"]])
+    model = feedback.get("model") or {}
+    if model:
+        quotes.append(model["before"])
+        fields.extend([model["after"], model["changed"]])
+    fields.append(feedback["your_turn"])
+    return {"text": text, "quotes": quotes, "fields": fields,
+            "before": model.get("before", "") if model else "",
+            "after": model.get("after", "") if model else ""}
+
+
+def _feedback_with_spark(learner_id: int, text: str,
+                         weakest_two: list) -> dict | None:
+    """Feedback card passing the checklist, or None after retries."""
+    if _model_api_key() is None:
+        return None
+    messages = _feedback_messages(text, weakest_two)
+    for _ in range(1 + SPARK_MAX_REGENS):
+        try:
+            data = json.loads(_spark_chat(messages, temperature=0))
+        except (SparkError, ValueError):
+            continue
+        fields = _validate_feedback_shape(data)
+        if fields is None:
+            continue
+        verdict = verify("feedback", _feedback_verify_payload(fields, text))
+        if verdict["pass"]:
+            return fields
+        store.log_event(learner_id, "Diagnose", "twin", "verify-feedback",
+                        f"rejected: {verdict['failed']}")
+    return None
+
+
+# Deterministic why/fix lines per skill for the template fallback card.
+SKILL_WHY_FIX = {
+    "Grammar": ("Readers get lost when verbs go wrong.",
+                "Check every he, she, and it."),
+    "Vocabulary": ("Vague words hide your point.",
+                   "Swap one weak word for a strong one."),
+    "Sentence structure": ("Choppy lines tire the reader.",
+                           "Join two short sentences with because."),
+    "Paragraphing": ("Readers need the main point first.",
+                     "Start with one line that tells the main idea."),
+    "Argument": ("A claim alone will not convince anyone.",
+                 "Add because and one reason."),
+    "Using sources": ("Readers trust named sources.",
+                      "Add 'According to' before one fact."),
+    "Academic tone": ("Chatty words weaken your point.",
+                      "Swap one chatty word for a calm one."),
+}
+
+
+FALLBACK_NOTICE = "Quick estimate - full feedback unavailable right now."
+
+
+def _cap_fallback_scores(text: str, scores: dict) -> dict:
+    """Cautious heuristic: at most L3, or L2 under three sentences."""
+    cap = 39 if len(_text_sentences(text)) < 3 else 59
+    return {skill: min(score, cap) for skill, score in scores.items()}
+
+
+def _template_feedback(skills_info: dict, weakest_two: list,
+                       text: str) -> dict:
+    """Deterministic card from skill reasons: two problems, no rewrite."""
+    problems = []
+    for skill in weakest_two:
+        info = skills_info[skill]
+        why, fix = SKILL_WHY_FIX[skill]
+        problems.append({"quote": info["evidence"], "wrong": info["reason"],
+                         "why": why, "fix": fix})
+    sents = _text_sentences(text)
+    if len(sents) > 1 and problems[0]["quote"] == problems[1]["quote"]:
+        other = next((s for s in sents if s != problems[0]["quote"]), None)
+        if other is not None:
+            problems[1]["quote"] = other
+    return {"strength": None, "problems": problems, "model": None,
+            "your_turn": "Fix these two lines the same way, then rewrite "
+                         "your paragraph below."}
+
+
+# Fixed cards for the scripted demo paragraphs (no Spark on the demo path).
+DEMO_FEEDBACK_WEAK = {
+    "strength": {"quote": "fish is dying",
+                 "line": "You name a clear result: fish are dying."},
+    "problems": [
+        {"quote": "Plastic is very big problem.",
+         "wrong": "No clear topic sentence: the line does not say what the "
+                  "paragraph will prove.",
+         "why": "Readers need the main point first.",
+         "fix": "Start with one line that names the problem and the place."},
+        {"quote": "People throw the waste in river",
+         "wrong": "Missing words: 'the waste in river' needs 'the' before "
+                  "river.",
+         "why": "Small grammar slips confuse readers.",
+         "fix": "Write 'throw waste into the river'."},
+    ],
+    "model": {"before": "Plastic is very big problem.",
+              "after": "Plastic waste is harming the river in my village.",
+              "changed": "It names the problem and the place."},
+    "your_turn": "Fix your other lines the same way, then rewrite your "
+                 "paragraph below.",
+}
+
+DEMO_FEEDBACK_IMPROVED = {
+    "strength": {"quote": "Plastic waste is seriously harming the river in "
+                          "my village.",
+                 "line": "Your first sentence names the problem and the "
+                         "place."},
+    "problems": [
+        {"quote": "students can help by spreading awareness",
+         "wrong": "No source is named for this idea.",
+         "why": "Readers trust named sources.",
+         "fix": "Add whose idea it is, or where you read it."},
+        {"quote": "The panchayat should set up waste bins near the river, "
+                  "and students can help by spreading awareness.",
+         "wrong": "Two ideas share one long line.",
+         "why": "Long lines tire the reader.",
+         "fix": "Split it into two short lines."},
+    ],
+    "model": {"before": "People throw bottles and bags into the water, and "
+                        "the fish are dying.",
+              "after": "Bottles and bags in the water are killing the fish.",
+              "changed": "Fewer words carry the same point."},
+    "your_turn": "Fix your other lines the same way, then rewrite your "
+                 "paragraph below.",
+}
 
 
 # Concrete signs per skill for comparing two drafts: what weak vs strong
@@ -3037,6 +3353,9 @@ VERIFY_FIXES = {
     "valid-score": "Score the attempt 0, 1 or 2.",
     "feedback-shape": "Give 2-4 short feedback sentences.",
     "quotes-learner": "Quote the learner's own words in the feedback.",
+    "quotes-in-text": "Quote only words that exist in the learner's text.",
+    "one-rewrite": "Rewrite at most one sentence, as one sentence.",
+    "simple-english": "Use basic words and short lines.",
 }
 
 # Structural subset for the curated bank (exempt from no-invented-examples).
@@ -3158,6 +3477,29 @@ def _verify_assessor_rules(payload: dict) -> list[str]:
     return failed
 
 
+def _verify_feedback_rules(payload: dict) -> list[str]:
+    """Feedback quotes the learner, rewrites one sentence, stays simple."""
+    payload = payload or {}
+    failed = []
+    flat = _normalized(payload.get("text") or "")
+    quotes = payload.get("quotes") or []
+    if not quotes or any(len(_normalized(q)) < 4 or _normalized(q) not in flat
+                         for q in quotes):
+        failed.append("quotes-in-text")
+    after = (payload.get("after") or "").strip()
+    if after:
+        sents = [s for s in re.split(r"[.!?]+", after) if s.strip()]
+        before = _normalized(payload.get("before") or "")
+        if len(sents) != 1 or not before or _normalized(after) == before:
+            failed.append("one-rewrite")
+    fields = payload.get("fields") or []
+    if any(not _uses_simple_english(f) for f in fields):
+        failed.append("simple-english")
+    if any(_has_generic_praise(f) for f in fields):
+        failed.append("no-generic-praise")
+    return failed
+
+
 def _verify_excerpt_grounding_rules(payload: dict) -> list[str]:
     """One failure per item quoting no excerpt sentence verbatim."""
     payload = payload or {}
@@ -3192,7 +3534,7 @@ def verify(kind: str, payload, context: dict | None = None,
     """Run the docs/plan.md checklist. Replies only in JSON.
 
     kind: "twin_reply" | "practice_item" | "practice_set" | "lesson_idea"
-      | "worked_model" | "excerpt_grounding" | "assessor".
+      | "worked_model" | "excerpt_grounding" | "assessor" | "feedback".
     context: {"message": learner text} for twin replies.
     rules: optional subset of rule ids (used for the curated bank).
     """
@@ -3211,6 +3553,8 @@ def verify(kind: str, payload, context: dict | None = None,
         failed = _verify_excerpt_grounding_rules(payload)
     elif kind == "assessor":
         failed = _verify_assessor_rules(payload)
+    elif kind == "feedback":
+        failed = _verify_feedback_rules(payload)
     elif kind == "practice_set":
         failed = []
         if not payload:
@@ -3792,7 +4136,7 @@ def post_diagnose(data: DiagnoseIn):
     demo_improved = _demo_mode() and _demo_text_match(
         text, DEMO_IMPROVED_PARAGRAPH)
     sparked = _diagnose_with_spark(data.learner_id, text, discipline) \
-        if demo_fixed is None else None
+        if demo_fixed is None and not demo_improved else None
     if demo_fixed is not None:
         scores = {s: DIAGNOSE_LEVEL_SCORES[demo_fixed[s]["level"]]
                   for s in SKILLS}
@@ -3827,6 +4171,8 @@ def post_diagnose(data: DiagnoseIn):
         if demo_improved:
             scores = dict(scores)
             scores["Paragraphing"] = DIAGNOSE_LEVEL_SCORES[2]
+        else:
+            scores = _cap_fallback_scores(text, scores)
         weakest = min(SKILLS, key=lambda s: scores[s])
         if demo_improved:
             store.log_event(
@@ -3836,7 +4182,35 @@ def post_diagnose(data: DiagnoseIn):
             store.log_event(data.learner_id, "Diagnose", "diagnose",
                             "heuristic-scorer",
                             f"weakest={weakest} scores={scores}")
-    store.save_skill_scores(data.learner_id, scores)
+    if demo_fixed is not None:
+        detail = {s: {"reason": demo_fixed[s]["reason"],
+                      "evidence": demo_fixed[s]["evidence"]} for s in SKILLS}
+        feedback = dict(DEMO_FEEDBACK_WEAK)
+    else:
+        if sparked is not None:
+            detail = {s: {"reason": sparked[s]["reason"],
+                          "evidence": sparked[s]["evidence"]} for s in SKILLS}
+        else:
+            detail = _heuristic_details(text, scores)
+        if demo_improved:
+            feedback = dict(DEMO_FEEDBACK_IMPROVED)
+        else:
+            weakest_two = sorted(
+                SKILLS, key=lambda s: (scores[s], SKILLS.index(s)))[:2]
+            feedback = None
+            if sparked is not None:
+                feedback = _feedback_with_spark(
+                    data.learner_id, text, weakest_two)
+            if feedback is not None:
+                store.log_event(
+                    data.learner_id, "Diagnose", "twin",
+                    "diagnose-feedback-spark",
+                    "Feedback on your paragraph by Muse Spark")
+            else:
+                # Spark already failed for this diagnosis, or no key: use
+                # the safe template now instead of another round of calls.
+                feedback = _template_feedback(detail, weakest_two, text)
+    store.save_skill_scores(data.learner_id, scores, detail)
     level = level_for_score(scores[weakest])
     if demo_improved:
         comparison = DEMO_COMPARISON
@@ -3854,13 +4228,38 @@ def post_diagnose(data: DiagnoseIn):
     note = twin_note(weakest)
     if data.draft_id is not None:
         store.update_draft_feedback(data.draft_id, f"{note} {comparison}")
+    learn = learn_card(weakest, level, discipline)
+    if isinstance(learn, dict) and isinstance(detail, dict) \
+            and (detail.get(weakest) or {}).get("evidence"):
+        quote = (detail[weakest]["evidence"] or "").strip()
+        handle = {"Using sources": "has no source",
+                  "Paragraphing": "has no clear main point",
+                  "Argument": "gives no proof",
+                  "Grammar": "has small errors",
+                  "Vocabulary": "repeats easy words",
+                  "Sentence structure": "runs in short lines",
+                  "Academic tone": "sounds too casual"}.get(
+                      weakest, "needs work")
+        learn["connect"] = (f"Your sentence '{quote}' {handle}. "
+                            "Here is why this skill matters.")
+    notice = None
+    if demo_fixed is None and sparked is None and not demo_improved:
+        notice = FALLBACK_NOTICE
     return {"scores": scores, "weakest": weakest,
             "level": level,
+            "notice": notice,
+            "levels": {s: level_for_score(scores[s]) for s in SKILLS},
+            "skills_details": [{"skill": s,
+                                "level": level_for_score(scores[s]),
+                                "reason": (detail or {}).get(s, {}).get("reason"),
+                                "evidence": (detail or {}).get(s, {}).get("evidence")}
+                               for s in SKILLS],
+            "feedback": feedback,
             "twin_note": note,
             "comparison": comparison,
             "level_changes": level_changes,
             "study_material": study_material(weakest),
-            "learn": learn_card(weakest, level, discipline)}
+            "learn": learn}
 
 
 @app.get("/rubric")
@@ -4511,8 +4910,10 @@ def post_answers(data: PracticeAnswersIn):
                     f"leveled_up={bool(level_ups)}")
     store.log_event(data.learner_id, "Practise", "twin", "assess",
                     f"assessed {total} answers")
+    level = level_for_score(new_score) if new_score is not None \
+        else level_for_score(latest_scores(data.learner_id).get(skill, 0))
     return {"correct": correct, "total": total, "accuracy": accuracy,
-            "skill": skill, "new_score": new_score,
+            "skill": skill, "level": level, "new_score": new_score,
             "leveled_up": bool(level_ups), "mastery": mastery,
             "level_ups": level_ups, "details": details}
 
@@ -4540,15 +4941,20 @@ def post_level_check(data: LevelCheckIn):
 
 @app.get("/growth")
 def get_growth(learner_id: int):
-    """Current skill scores (plus history) for the growth chart."""
+    """Current skill levels, reasons and history for the growth chart."""
     if store.get_learner(learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     scores = latest_scores(learner_id)
+    levels = {skill: level_for_score(score) for skill, score in scores.items()}
+    details: dict[str, dict] = {}
     history: dict[str, list[dict]] = {}
     for row in store.get_skill_scores(learner_id):
+        details[row["skill_name"]] = {"reason": row.get("reason"),
+                                      "evidence": row.get("evidence")}
         history.setdefault(row["skill_name"], []).append(
             {"score": row["score"], "date": row["date"]})
-    return {"learner_id": learner_id, "scores": scores, "history": history}
+    return {"learner_id": learner_id, "scores": scores, "levels": levels,
+            "details": details, "history": history}
 
 
 def independence(learner_id: int) -> dict:
@@ -5120,7 +5526,7 @@ def twin_scaffold_reply(message: str, weakest: str) -> str:
         return ("You are saying that this part is hard for you. "
                 f"Start with this: '{starter}'")
     return (f"{TWIN_HINTS.get(weakest, TWIN_HINTS['Paragraphing'])} "
-            f"I found {weakest.lower()} hard too.")
+            f"{twin_note(weakest)}")
 
 
 @app.get("/drafts")

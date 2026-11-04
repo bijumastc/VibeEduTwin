@@ -196,21 +196,54 @@ def test_how_im_scored_ui_strings():
     assert "rubric" in api
 
 
+def _feedback_reply(text):
+    import json
+    first, _, _ = text.partition(" because ")
+    return json.dumps({
+        "strength": {"quote": "families gather",
+                     "line": "You name who gathers for the feast."},
+        "problems": [
+            {"quote": first,
+             "wrong": "No clear topic sentence yet.",
+             "why": "Readers need the main point first.",
+             "fix": "Start with one line on the main idea."},
+            {"quote": "because families gather",
+             "wrong": "No source is named.",
+             "why": "Readers trust named sources.",
+             "fix": "Say where you read this."}],
+        "model": {"before": text,
+                  "after": "Families gather in Kerala for Onam.",
+                  "changed": "Fewer words carry the same point."},
+        "your_turn": "Fix your other lines the same way."})
+
+
+def _routed_chat(calls, diagnose_replies, text):
+    """Fake Spark: diagnose prompts get diagnose replies, feedback gets one."""
+    def fake_chat(messages, temperature=None):
+        calls.append((messages, temperature))
+        if "give feedback" in messages[0]["content"]:
+            return _feedback_reply(text)
+        n = sum(1 for m, _ in calls if "give feedback"
+                not in m[0]["content"])
+        return diagnose_replies[n - 1]
+    return fake_chat
+
+
 def test_spark_diagnosis_maps_levels_and_logs_provenance(tmp_db, monkeypatch):
     text = "Onam is Kerala's harvest festival because families gather."
     calls = []
-
-    def fake_chat(messages, temperature=None):
-        calls.append((messages, temperature))
-        return _diagnose_reply({"Grammar": 1, "Argument": 4}, "families gather")
-
+    fake_chat = _routed_chat(
+        calls, [_diagnose_reply({"Grammar": 1, "Argument": 4},
+                                "families gather")], text)
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
     monkeypatch.setattr(main, "_spark_chat", fake_chat)
     learner_id = tmp_db.create_learner("T", "10", "English", "Malayalam")
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content=text))
-    assert len(calls) == 1
-    assert calls[0][1] == 0  # temperature 0
-    prompt = calls[0][0][-1]["content"]
+    diagnose_calls = [c for c in calls
+                      if "give feedback" not in c[0][0]["content"]]
+    assert len(diagnose_calls) == 1
+    assert diagnose_calls[0][1] == 0  # temperature 0
+    prompt = diagnose_calls[0][0][-1]["content"]
     assert "Discipline: Sciences" in prompt
     assert "L1:" in prompt and "L5:" in prompt and text in prompt
     assert res["scores"]["Grammar"] == 10
@@ -222,6 +255,8 @@ def test_spark_diagnosis_maps_levels_and_logs_provenance(tmp_db, monkeypatch):
     assert len(logged) == 1
     assert "Diagnosed by Muse Spark" in logged[0]["result"]
     assert "weakest=Grammar" in logged[0]["result"]
+    assert res["feedback"]["model"]["before"] == text
+    assert _spark_events(learner_id, "diagnose-feedback-spark")
 
 
 def test_diagnosis_rejects_bad_evidence_and_retries(tmp_db, monkeypatch):
@@ -229,16 +264,14 @@ def test_diagnosis_rejects_bad_evidence_and_retries(tmp_db, monkeypatch):
     replies = [_diagnose_reply({}, "zebras drink lava"),
                _diagnose_reply({"Grammar": 2}, "families gather")]
     calls = []
-
-    def fake_chat(messages, temperature=None):
-        calls.append(messages)
-        return replies[len(calls) - 1]
-
+    fake_chat = _routed_chat(calls, replies, text)
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
     monkeypatch.setattr(main, "_spark_chat", fake_chat)
     learner_id = tmp_db.create_learner("T", "10", "English", "Malayalam")
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content=text))
-    assert len(calls) == 2  # invented evidence rejected, second try used
+    diagnose_calls = [c for c in calls
+                      if "give feedback" not in c[0][0]["content"]]
+    assert len(diagnose_calls) == 2  # invented evidence rejected, 2nd used
     assert res["scores"]["Grammar"] == 30
     assert res["weakest"] == "Grammar"
     assert _spark_events(learner_id, "diagnose-spark")
@@ -257,7 +290,8 @@ def test_diagnosis_exhausts_retries_then_heuristic(tmp_db, monkeypatch):
     text = "Onam is Kerala's harvest festival because families gather."
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content=text))
     assert len(calls) == 3  # 1 initial + 2 regens
-    assert res["scores"] == main.diagnose_text(text)
+    assert res["scores"] == main._cap_fallback_scores(
+        text, main.diagnose_text(text))
     assert not _spark_events(learner_id, "diagnose-spark")
     assert _spark_events(learner_id, "heuristic-scorer")
 
@@ -271,7 +305,8 @@ def test_no_key_keeps_heuristic_diagnosis(tmp_db, monkeypatch):
     learner_id = tmp_db.create_learner("T", "10", "English", "Malayalam")
     text = "Onam is Kerala's harvest festival because families gather."
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id, content=text))
-    assert res["scores"] == main.diagnose_text(text)
+    assert res["scores"] == main._cap_fallback_scores(
+        text, main.diagnose_text(text))
     assert _spark_events(learner_id, "heuristic-scorer")
 
 

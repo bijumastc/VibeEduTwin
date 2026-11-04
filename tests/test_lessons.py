@@ -149,7 +149,8 @@ def test_why_lines_pass_twin_verifier():
     for module_id, line in main.LESSON_WHY.items():
         text = line.format(topic="evaporation", genre="lab report")
         assert main.verify_twin_reply(text) == [], (module_id, text)
-        assert text.startswith("I ") or text.startswith("My "), text
+        assert text.startswith("You will"), text  # future-self voice only
+        assert "hard too" not in text.lower(), text
 
 
 def test_ideas_are_two_to_three_short_sentences():
