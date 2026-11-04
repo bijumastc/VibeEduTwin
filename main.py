@@ -132,6 +132,12 @@ class LearnerIn(BaseModel):
 class DraftIn(BaseModel):
     learner_id: int
     content: str = Field(min_length=1, description="The learner's paragraph")
+    source: str = "typed"  # typed | scan
+
+
+class DraftScanIn(BaseModel):
+    learner_id: int
+    image: str = ""  # base64 photo (data URL), compressed under 1 MB
 
 
 class DiagnoseIn(BaseModel):
@@ -3647,12 +3653,98 @@ def post_draft(data: DraftIn):
     """Write step: save the paragraph and remember it for the twin."""
     if store.get_learner(data.learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
-    draft_id = store.save_draft(data.learner_id, data.content, feedback="")
+    if data.source not in ("typed", "scan"):
+        raise HTTPException(status_code=400, detail="Unknown draft source")
+    draft_id = store.save_draft(data.learner_id, data.content, feedback="",
+                                source=data.source)
     store.save_writing_sample(data.learner_id, data.content)
     store.log_event(data.learner_id, "Write", "twin", "post_draft",
                     f"draft_id={draft_id} words={len(data.content.split())}")
     return {"ok": True, "draft_id": draft_id, "learner_id": data.learner_id,
             "message": "Draft saved."}
+
+
+# --- Scan my paper (Spark vision transcription) --------------------------------
+# Image input shape per dev.meta.ai/docs/image-understanding (Chat
+# Completions): the user message carries content blocks, the photo as an
+# image_url object whose url is a base64 data URL. The photo is forwarded,
+# never stored: only the confirmed text reaches the drafts table.
+SCAN_INSTRUCTION = (
+    "Transcribe this handwritten paragraph exactly as written, keeping the "
+    "learner's own spelling and grammar. Do not correct anything. Mark any "
+    "word you cannot read as [unclear].")
+
+SPARK_SCAN_SYSTEM = (
+    "You transcribe a handwritten paragraph photo for a first-year Indian "
+    "undergraduate. Reply with a JSON object only, no other text, with keys: "
+    "text (the paragraph transcribed exactly as written, keeping the "
+    "learner's own spelling and grammar, with [unclear] for words you "
+    "cannot read) and unclear (an array with one short context snippet — "
+    "the 2-3 words before each [unclear] mark, or empty when the mark "
+    "starts the text — one entry per mark, in order). Do not correct "
+    "anything.")
+
+SCAN_FALLBACK = "Please type your paragraph."
+SCAN_MAX_CHARS = 2000000  # ~1.5 MB of base64; browser compresses under 1 MB
+
+
+def _scan_messages(image_url: str) -> list[dict]:
+    """Prompt: the fixed instruction plus the photo as an image_url block."""
+    return [{"role": "system", "content": SPARK_SCAN_SYSTEM},
+            {"role": "user", "content": [
+                {"type": "text", "text": SCAN_INSTRUCTION},
+                {"type": "image_url",
+                 "image_url": {"url": image_url}}]}]
+
+
+def _validate_scan(data) -> dict | None:
+    """Non-empty text with one unclear entry per [unclear] mark."""
+    if not isinstance(data, dict):
+        return None
+    text = (data.get("text") or "").strip()
+    unclear = data.get("unclear")
+    if not text or not isinstance(unclear, list):
+        return None
+    if any(not isinstance(u, str) for u in unclear):
+        return None
+    if len(unclear) != text.count("[unclear]"):
+        return None
+    return {"text": text, "unclear": unclear}
+
+
+def _scan_with_spark(image_url: str) -> dict | None:
+    """Transcription passing validation, or None after retries."""
+    messages = _scan_messages(image_url)
+    for _ in range(1 + SPARK_MAX_REGENS):
+        try:
+            data = json.loads(_spark_chat(messages))
+        except (SparkError, ValueError):
+            continue
+        fields = _validate_scan(data)
+        if fields is not None:
+            return fields
+    return None
+
+
+@app.post("/drafts/scan")
+def post_draft_scan(data: DraftScanIn):
+    """Scan step: transcribe a paper photo; the photo is never stored."""
+    if store.get_learner(data.learner_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    raw = (data.image or "").strip()
+    if not raw or len(raw) > SCAN_MAX_CHARS:
+        return {"ok": False, "message": SCAN_FALLBACK}
+    url = raw if raw.startswith("data:image/") else \
+        f"data:image/jpeg;base64,{raw}"
+    found = _scan_with_spark(url)
+    if found is None:
+        store.log_event(data.learner_id, "Write", "twin", "scan",
+                        "scan failed")
+        return {"ok": False, "message": SCAN_FALLBACK}
+    store.log_event(
+        data.learner_id, "Write", "twin", "scan",
+        f"Read by Muse Spark (vision): {len(found['unclear'])} unclear words")
+    return {"ok": True, "text": found["text"], "unclear": found["unclear"]}
 
 
 @app.post("/diagnose")

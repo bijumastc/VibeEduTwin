@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS drafts (
     learner_id INTEGER NOT NULL REFERENCES learners(id),
     content TEXT NOT NULL,
     feedback TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'typed',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS event_log (
@@ -105,6 +106,7 @@ def _connect() -> sqlite3.Connection:
     conn.executescript(SCHEMA)  # no-op once tables exist
     _ensure_discipline_column(conn)  # migrate pre-discipline databases
     _migrate_discipline_values(conn)  # map pre-curriculum names to current ones
+    _ensure_draft_source_column(conn)  # migrate pre-scan databases
     return conn
 
 
@@ -125,6 +127,18 @@ def _migrate_discipline_values(conn: sqlite3.Connection) -> None:
     for old, new in OLD_DISCIPLINES.items():
         conn.execute("UPDATE learners SET discipline = ? WHERE discipline = ?",
                      (new, old))
+
+
+def _ensure_draft_source_column(conn: sqlite3.Connection) -> None:
+    """Add drafts.source to databases created before Scan my paper.
+
+    Existing rows (typed paragraphs) default to 'typed'.
+    """
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(drafts)")]
+    if "source" not in columns:
+        conn.execute(
+            "ALTER TABLE drafts ADD COLUMN source TEXT NOT NULL DEFAULT 'typed'"
+        )
 
 
 # --- Learners -----------------------------------------------------------------
@@ -250,13 +264,14 @@ def get_practice_results(learner_id: int, skill: str) -> list[dict]:
 
 
 # --- Drafts ---------------------------------------------------------------------
-def save_draft(learner_id: int, content: str, feedback: str) -> int:
+def save_draft(learner_id: int, content: str, feedback: str,
+               source: str = "typed") -> int:
     """Save a draft plus its feedback; returns the new draft id."""
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO drafts (learner_id, content, feedback, created_at)"
-            " VALUES (?, ?, ?, ?)",
-            (learner_id, content, feedback, _utcnow()),
+            "INSERT INTO drafts (learner_id, content, feedback, source,"
+            " created_at) VALUES (?, ?, ?, ?, ?)",
+            (learner_id, content, feedback, source, _utcnow()),
         )
         return cur.lastrowid
 
@@ -265,7 +280,7 @@ def get_drafts(learner_id: int) -> list[dict]:
     """Return all drafts for a learner, oldest first."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, content, feedback, created_at FROM drafts"
+            "SELECT id, content, feedback, source, created_at FROM drafts"
             " WHERE learner_id = ? ORDER BY id",
             (learner_id,),
         ).fetchall()

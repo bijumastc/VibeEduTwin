@@ -30,7 +30,8 @@ const post = (path, body) =>
   request(path, { method: 'POST', body: JSON.stringify({ learner_id: LEARNER_ID, ...body }) });
 
 export const api = {
-  saveDraft: (content) => post('/drafts', { content }),
+  saveDraft: (content, source) => post('/drafts', { content, source: source || 'typed' }),
+  scanPaper: (image) => post('/drafts/scan', { image }),
   diagnose: (draft_id) => post('/diagnose', { draft_id }),
   getPractice: () => request(`/practice?learner_id=${LEARNER_ID}`),
   submitAnswers: (set_id, answers) => post('/practice/answers', { set_id, answers }),

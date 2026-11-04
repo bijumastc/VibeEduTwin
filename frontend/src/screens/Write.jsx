@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../api.js';
 import CompactLesson from '../components/CompactLesson.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
@@ -7,6 +7,51 @@ import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
 import VoiceButton from '../components/VoiceButton.jsx';
 
+// Shrink a photo under 1 MB in the browser (the photo itself is never stored).
+const shrinkImage = (file) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    let quality = 0.9;
+    const attempt = () => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('unreadable'));
+          return;
+        }
+        if (blob.size <= 1000000 || quality <= 0.4) {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('unreadable'));
+          reader.readAsDataURL(blob);
+        } else {
+          quality -= 0.15;
+          attempt();
+        }
+      }, 'image/jpeg', quality);
+    };
+    attempt();
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    reject(new Error('unreadable'));
+  };
+  img.src = url;
+});
+
+const highlightUnclear = (value) => value.split('[unclear]').map((part, i, arr) => (
+  <span key={i}>
+    {part}
+    {i < arr.length - 1 && <mark>[unclear]</mark>}
+  </span>
+));
+
 // Write: big text box, submit, then 7-skill diagnosis + twin note + Learn card.
 export default function Write({ go }) {
   const [text, setText] = useState('');
@@ -14,13 +59,16 @@ export default function Write({ go }) {
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [twinOpen, setTwinOpen] = useState(false);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanned, setScanned] = useState(false);
+  const fileRef = useRef(null);
 
   const submit = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
     setError('');
     try {
-      const draft = await api.saveDraft(text.trim());
+      const draft = await api.saveDraft(text.trim(), scanned ? 'scan' : 'typed');
       const diagnosis = await api.diagnose(draft.draft_id);
       setResult(diagnosis);
     } catch (err) {
@@ -29,10 +77,31 @@ export default function Write({ go }) {
     setBusy(false);
   };
 
+  const scan = async (file) => {
+    if (!file || scanBusy) return;
+    setScanBusy(true);
+    setError('');
+    try {
+      const dataUrl = await shrinkImage(file);
+      const res = await api.scanPaper(dataUrl);
+      if (!res.ok) {
+        setError(res.message);
+      } else {
+        setText(res.text);
+        setScanned(true);
+      }
+    } catch {
+      setError('Please type your paragraph.');
+    }
+    setScanBusy(false);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
   const reset = () => {
     setText('');
     setResult(null);
     setError('');
+    setScanned(false);
   };
 
   return (
@@ -47,12 +116,34 @@ export default function Write({ go }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
+          {scanned && (
+            <div className="card tint">
+              <p className="muted">
+                Check that this matches your paper. Fix any word the app read wrongly.
+              </p>
+              <p>{highlightUnclear(text)}</p>
+            </div>
+          )}
           <button className="btn" onClick={submit} disabled={busy || !text.trim()}>
-            {busy ? 'Checking…' : 'Submit'}
+            {scanned ? 'This is what I wrote' : (busy ? 'Checking…' : 'Submit')}
           </button>{' '}
           <VoiceButton
             disabled={busy}
             onTranscript={(spoken) => setText((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+          />{' '}
+          <button
+            className="btn secondary"
+            onClick={() => fileRef.current && fileRef.current.click()}
+            disabled={busy || scanBusy}
+          >
+            {scanBusy ? 'Reading…' : 'Scan my paper'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/jpeg,image/png"
+            style={{ display: 'none' }}
+            onChange={(e) => scan(e.target.files[0])}
           />
         </>
       )}
