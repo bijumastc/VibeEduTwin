@@ -97,6 +97,9 @@ structurally checked at serve time and failures are excluded.
   The motivation layer (twin message, grammar fixes, word tips, improve
   points, critical tip, next goal) is deterministic: every fix copies the
   learner's exact words, and the same checklist guards the served card.
+  Grammar fixes include spelling: an offline checker (`spelling.py`, no
+  network) corrects slips like "hakathon" to "hackathon"; names stay
+  untouched and the model rewrite carries the correction.
 
 ## Rubric
 

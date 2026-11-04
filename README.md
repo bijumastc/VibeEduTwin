@@ -19,7 +19,7 @@ VibeEduTwin is a writing twin that coaches through a structured practice loop, n
 1. **Write:** the learner types, speaks or photographs a handwritten paragraph. They can also ask questions in Malayalam, Manglish or another Indian language.
 2. **Diagnose:** Muse Spark scores the paragraph on a fixed 7-skill rubric (grammar, vocabulary, sentence structure, paragraphing, argument, using sources, academic tone). Every score quotes the learner's own words as evidence.
 3. **Feedback:** the learner gets one real strength, the main problems with what is wrong and why, one model sentence (before → after), and a "your turn" prompt to fix the rest themselves.
-4. **Learn:** a curriculum of 6 disciplines × 9 modules, from topic sentences to the discipline's own genre (lab report, technical report, case report, essay, business report, research report). Mechanics, APA/MLA referencing and academic vocabulary are included. Every rule and example comes from open-licensed textbooks.
+4. **Learn:** a curriculum of 6 disciplines × 9 modules, from topic sentences to the discipline's own genre (lab report, technical report, case report, essay, business report, research report). Mechanics of writing, APA/MLA referencing and academic vocabulary are included. Every rule and example comes from open-licensed textbooks.
 5. **Practise:** productive-struggle scaffolding. The learner tries first, then gets a guiding question, a hint, a real book example, and finally rewrites. Practice moves from recognise to repair to produce to apply. Every answer is assessed.
 6. **Grow:** levels per skill, a draft-by-draft comparison ("In your last paragraph you had no topic sentence; this time…"), and a hint-use trend that shows growing independence.
 

@@ -50,7 +50,7 @@ def test_six_disciplines_with_genres():
 
 def test_nine_modules_in_order_with_genre_last():
     shared = ["Topic sentences", "Thesis statements", "Developing paragraphs",
-              "Coherence and flow", "Using sources", "Mechanics",
+              "Coherence and flow", "Using sources", "Mechanics of writing",
               "Referencing styles", "Academic vocabulary"]
     genres = {"Sciences": "Lab reports", "Technology": "Technical reports",
               "Medicine": "Case reports", "Arts & Humanities": "Essays",

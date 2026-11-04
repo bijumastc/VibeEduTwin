@@ -49,6 +49,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import learner_store as store
+import spelling as spellcheck
 
 # --- Twin system prompt ---------------------------------------------------------
 # Used by every LLM call once Muse Spark is wired in. The twin speaks as the
@@ -1333,7 +1334,7 @@ CURRICULUM_MODULES = [
      "skill": "Sentence structure", "required_level": 3, "query": "coherence and flow"},
     {"id": "using-sources", "title": "Using sources",
      "skill": "Using sources", "required_level": 3, "query": "using sources citations"},
-    {"id": "mechanics", "title": "Mechanics",
+    {"id": "mechanics", "title": "Mechanics of writing",
      "skill": "Grammar", "required_level": 1,
      "query": "mechanics punctuation capitals spelling"},
     {"id": "referencing-styles", "title": "Referencing styles",
@@ -3211,6 +3212,49 @@ _COMMON_MISSPELLINGS = {
     "tommorow": "tomorrow", "freind": "friend", "beleive": "believe",
     "definately": "definitely", "goverment": "government",
     "knowlege": "knowledge",
+    # Doubled-letter slips the fuzzy pass cannot see (overgenerated forms
+    # count as known so correct words like "stopped" are never flagged).
+    "runing": "running", "swiming": "swimming", "stoped": "stopped",
+    "stoping": "stopping", "bigest": "biggest", "begining": "beginning",
+    "geting": "getting", "puting": "putting", "cuting": "cutting",
+    "droped": "dropped", "runer": "runner", "programed": "programmed",
+    # Regularised irregular verbs ("goed" would otherwise meet "goes").
+    "goed": "went", "doed": "did", "haved": "had", "maked": "made",
+    "taked": "took", "gived": "gave", "writed": "wrote", "rided": "rode",
+    "drived": "drove", "breaked": "broke", "speaked": "spoke",
+    "teached": "taught", "catched": "caught", "buyed": "bought",
+    "bringed": "brought", "thinked": "thought", "fighted": "fought",
+    "finded": "found", "sended": "sent", "spended": "spent",
+    "sleeped": "slept", "keeped": "kept", "feeled": "felt",
+    "leaved": "left", "losed": "lost", "weared": "wore", "teared": "tore",
+    "beared": "bore", "sweared": "swore", "standed": "stood",
+    "understanded": "understood", "telled": "told", "selled": "sold",
+    "holded": "held", "sayed": "said", "falled": "fell", "runned": "ran",
+    # Doubled-tail slips on correct -ful/-ly/-able words.
+    "dailly": "daily", "truely": "truly", "confortable": "comfortable",
+    "usefull": "useful", "carefull": "careful", "powerfull": "powerful",
+    "helpfull": "helpful", "wonderfull": "wonderful",
+    "gratefull": "grateful", "successfull": "successful",
+    "faithfull": "faithful", "hopefull": "hopeful",
+    "thankfull": "thankful", "cheerfull": "cheerful",
+    "colourfull": "colourful", "colorfull": "colorful",
+    "playfull": "playful", "restfull": "restful", "tastefull": "tasteful",
+    "doubtfull": "doubtful", "harmfull": "harmful",
+    "shamefull": "shameful", "disgracefull": "disgraceful",
+    "gracefull": "graceful", "spitefull": "spiteful",
+    "delightfull": "delightful", "frightfull": "frightful",
+    "dreadfull": "dreadful", "sorrowfull": "sorrowful",
+    "mournfull": "mournful", "scornfull": "scornful",
+    "disdainfull": "disdainful", "fancifull": "fanciful",
+    "readble": "readable", "useble": "usable",
+    "writen": "written", "arguement": "argument", "managment": "management",
+}
+
+# One-word slips that are really two words ("alot" would meet "slot").
+_MULTIWORD_FIXES = {
+    "alot": "a lot", "infact": "in fact", "inspite": "in spite",
+    "aswell": "as well", "atleast": "at least", "ofcourse": "of course",
+    "incase": "in case", "noone": "no one", "hardwork": "hard work",
 }
 
 
@@ -3221,9 +3265,17 @@ def _grammar_fixes(text: str) -> list[dict]:
         if len(fixes) >= 3:
             break
         if sent and sent[0].isalpha() and not sent[0].isupper():
-            fixes.append({"wrong": sent, "right": sent[0].upper() + sent[1:],
-                          "rule": "Start each sentence with a capital "
-                                  "letter."})
+            fixed = sent[0].upper() + sent[1:]
+            rule = "Start each sentence with a capital letter."
+            first = re.match(r"[A-Za-z']+", sent)
+            if first:
+                head = first.group(0)
+                found = spellcheck.correction(head)
+                if found is not None:
+                    fixed = found[0].upper() + found[1:] + sent[first.end():]
+                    rule = ("Start with a capital letter. "
+                            f"The spelling is '{found}'.")
+            fixes.append({"wrong": sent, "right": fixed, "rule": rule})
             continue
         lowered = f" {sent} "
         if " i " in lowered:
@@ -3251,6 +3303,7 @@ def _grammar_fixes(text: str) -> list[dict]:
             fixes.append({"wrong": sent, "right": fixed,
                           "rule": "Use 'an' before a, e, i, o and u."})
             continue
+        made = len(fixes)
         for bad, good in _COMMON_MISSPELLINGS.items():
             hit = re.search(r"\b" + re.escape(bad) + r"\b", sent)
             if hit:
@@ -3258,6 +3311,24 @@ def _grammar_fixes(text: str) -> list[dict]:
                 fixes.append({"wrong": sent, "right": fixed,
                               "rule": f"The spelling is '{good}'."})
                 break
+        if len(fixes) == made:
+            for bad, good in _MULTIWORD_FIXES.items():
+                hit = re.search(r"\b" + re.escape(bad) + r"\b", sent)
+                if hit:
+                    fixed = sent[:hit.start()] + good + sent[hit.end():]
+                    fixes.append({"wrong": sent, "right": fixed,
+                                  "rule": f"The spelling is '{good}'."})
+                    break
+        if len(fixes) == made:
+            for match in re.finditer(r"[A-Za-z]+(?:'[A-Za-z]+)?", sent):
+                token = match.group(0)
+                found = spellcheck.correction(token)
+                if found is not None:
+                    fixed = (sent[:match.start()] + found
+                             + sent[match.end():])
+                    fixes.append({"wrong": sent, "right": fixed,
+                                  "rule": f"The spelling is '{found}'."})
+                    break
     return fixes
 
 
