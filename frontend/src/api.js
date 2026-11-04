@@ -58,6 +58,7 @@ export const api = {
   askTwin: (message, screen) => post('/twin/ask', { message, screen }),
   rubric: () => request('/rubric'),
   config: () => request('/config'),
+  deleteData: () => post('/delete-data', {}),
   voiceSocketUrl: (learnerId) =>
     `${API_URL.replace(/^http/, 'ws')}/ws/transcribe?learner_id=${learnerId || LEARNER_ID}`,
 };
@@ -67,4 +68,5 @@ const FLAG = 'vibe_leveled_up';
 export const LeveledUp = {
   get: () => localStorage.getItem(FLAG) === '1',
   set: () => localStorage.setItem(FLAG, '1'),
+  clear: () => localStorage.removeItem(FLAG),
 };

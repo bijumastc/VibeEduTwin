@@ -6,8 +6,11 @@ import SkillBars from '../components/SkillBars.jsx';
 // unlocks only after the first level-up; drafts always show.
 export default function MyGrowth({ go }) {
   const [state, setState] = useState({ loading: true });
+  const [confirming, setConfirming] = useState(false);
 
-  useEffect(() => {
+  const load = () => {
+    setConfirming(false);
+    setState({ loading: true });
     Promise.all([api.growth(), api.levelCheck(), api.drafts(), api.independence()])
       .then(([growth, levels, draftsRes, independence]) => {
         if ((levels.leveled_up || []).length > 0) LeveledUp.set();
@@ -20,7 +23,20 @@ export default function MyGrowth({ go }) {
         });
       })
       .catch((err) => setState({ loading: false, error: err.message }));
-  }, []);
+  };
+
+  useEffect(load, []);
+
+  const remove = async () => {
+    try {
+      await api.deleteData();
+    } catch (err) {
+      setState({ loading: false, error: err.message });
+      return;
+    }
+    LeveledUp.clear();
+    load();
+  };
 
   if (state.loading) return <p className="loading">Loading…</p>;
   if (state.error) return <div className="error">{state.error}</div>;
@@ -72,7 +88,11 @@ export default function MyGrowth({ go }) {
       )}
 
       <div className="card">
-        <div className="card-title">Working more independently</div>
+        <div className="card-title">
+          {state.independence.improving
+            ? 'Working more independently'
+            : 'Hints help you learn - try one step on your own next time.'}
+        </div>
         <p className="muted">{state.independence.message}</p>
       </div>
 
@@ -90,6 +110,22 @@ export default function MyGrowth({ go }) {
           <p className="muted">{d.feedback || 'No feedback yet.'}</p>
         </div>
       ))}
+
+      {!confirming && (
+        <button className="btn secondary" onClick={() => setConfirming(true)}>
+          Delete my data
+        </button>
+      )}
+      {confirming && (
+        <div className="card warn">
+          <p>Delete all your drafts, scores, and history? This cannot be undone.</p>
+          <button className="btn" onClick={remove}>Yes, delete everything</button>
+          <div style={{ height: 10 }} />
+          <button className="btn secondary" onClick={() => setConfirming(false)}>
+            Keep my data
+          </button>
+        </div>
+      )}
     </div>
   );
 }

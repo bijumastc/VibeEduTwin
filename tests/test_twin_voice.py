@@ -158,3 +158,21 @@ def test_twin_replies_use_no_spark(tmp_path, monkeypatch):
     res = main.post_twin_ask(main.TwinAskIn(learner_id=learner_id,
                                             message="I am stuck on my line."))
     assert res["reply"].strip() and res["weakest"]
+
+
+def test_twin_questions_are_not_saved_as_drafts(tmp_path, monkeypatch):
+    import learner_store as store
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "twin_nodrafts.db")
+    learner_id = store.create_learner("T", "10", "English", "Malayalam")
+    main.post_twin_ask(main.TwinAskIn(learner_id=learner_id,
+                                      message="Give me a hint"))
+    main.post_twin_ask(main.TwinAskIn(learner_id=learner_id,
+                                      message="Check my first line"))
+    assert store.get_drafts(learner_id) == []
+
+
+def test_twin_panel_never_saves_drafts():
+    panel = (ROOT / "frontend" / "src" / "components" / "TwinPanel.jsx").read_text(
+        encoding="utf-8")
+    assert "saveDraft" not in panel

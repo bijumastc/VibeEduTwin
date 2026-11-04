@@ -197,6 +197,10 @@ class ScaffoldRewriteIn(BaseModel):
     text: str = ""
 
 
+class DeleteDataIn(BaseModel):
+    learner_id: int
+
+
 # --- Helpers ----------------------------------------------------------------------
 def level_for_score(score: float) -> int:
     """Map a 0-100 skill score to levels 1-5."""
@@ -3735,9 +3739,12 @@ def post_diagnose(data: DiagnoseIn):
                 "current": level_for_score(scores[skill])}
         for skill in SKILLS
     }
+    note = twin_note(weakest)
+    if data.draft_id is not None:
+        store.update_draft_feedback(data.draft_id, f"{note} {comparison}")
     return {"scores": scores, "weakest": weakest,
             "level": level,
-            "twin_note": twin_note(weakest),
+            "twin_note": note,
             "comparison": comparison,
             "level_changes": level_changes,
             "study_material": study_material(weakest),
@@ -4433,10 +4440,10 @@ def get_growth(learner_id: int):
 
 
 def independence(learner_id: int) -> dict:
-    """Hint-use trend across scaffold attempts: fewer hints = more independent.
+    """Hint-use trend across recent scaffold attempts (one task, one session).
 
-    Compares hint + "Show me now" + worked-steps uses in the most recent
-    attempts against the same number of attempts just before (up to 5 each side).
+    Windows are the last 3 attempts' hint + "Show me now" + worked-steps
+    counts, oldest first. Improving when use strictly falls, or stays zero.
     """
     helps: dict[str, int] = {}
     order: list[str] = []
@@ -4450,30 +4457,15 @@ def independence(learner_id: int) -> dict:
             order.append(aid)
         if row["tool"] in ("hint", "show-me", "steps"):
             helps[aid] += 1
-    if len(order) < 2:
-        return {"attempts": len(order), "recent_helps": sum(helps.values()),
-                "previous_helps": 0, "trend": "new",
+    windows = [helps[a] for a in order[-3:]]
+    if not windows:
+        return {"attempts": 0, "hints": [], "improving": False,
                 "message": "Try a module task to start tracking."}
-    k = min(5, max(1, len(order) // 2))
-    recent, previous = order[-k:], order[-2 * k:-k]
-    recent_helps = sum(helps[a] for a in recent)
-    previous_helps = sum(helps[a] for a in previous)
-    if recent_helps == 0 and previous_helps == 0:
-        trend, message = "independent", \
-            "Fully independent: no hints in your recent tries."
-    elif recent_helps < previous_helps:
-        trend = "improving"
-        message = (f"Working more independently: {recent_helps} hints in your "
-                   f"last {k} {'tries' if k > 1 else 'try'}, down from {previous_helps}.")
-    elif recent_helps == previous_helps:
-        trend, message = "steady", \
-            f"Steady: {recent_helps} hints across your recent tries."
-    else:
-        trend, message = "more-help", \
-            (f"{recent_helps} hints in your last {k} "
-             f"{'tries' if k > 1 else 'try'}. Hints help you learn.")
-    return {"attempts": len(order), "recent_helps": recent_helps,
-            "previous_helps": previous_helps, "trend": trend, "message": message}
+    improving = all(w == 0 for w in windows) or (
+        len(windows) >= 2
+        and all(b < a for a, b in zip(windows, windows[1:])))
+    return {"attempts": len(order), "hints": windows, "improving": improving,
+            "message": f"Hints used: {' → '.join(map(str, windows))}"}
 
 
 @app.get("/independence")
@@ -4482,6 +4474,22 @@ def get_independence(learner_id: int):
     if store.get_learner(learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     return {"learner_id": learner_id, **independence(learner_id)}
+
+
+@app.post("/delete-data")
+def post_delete_data(data: DeleteDataIn):
+    """Delete everything for a learner: drafts, scores, results, logs."""
+    if store.get_learner(data.learner_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    store.reset_learner(data.learner_id)
+    for set_id in [s for s, v in ISSUED_SETS.items()
+                   if v.get("learner_id") == data.learner_id]:
+        del ISSUED_SETS[set_id]
+    for attempt_id in [a for a, v in SCAFFOLD_ATTEMPTS.items()
+                       if v.get("learner_id") == data.learner_id]:
+        del SCAFFOLD_ATTEMPTS[attempt_id]
+    return {"ok": True, "learner_id": data.learner_id,
+            "message": "All your data was deleted. Starting fresh."}
 
 
 # --- Voice input (Muse Voice Transcribe) --------------------------------------

@@ -78,6 +78,18 @@ def test_compare_note_branches():
             assert note and main.verify_twin_reply(note) == [], (skill, prev, new)
 
 
+def test_diagnose_saves_feedback_on_draft(tmp_db):
+    learner_id = tmp_db.create_learner("T", "10", "English", "Malayalam")
+    draft_id = tmp_db.save_draft(learner_id, "Nice good.", "")
+    assert tmp_db.get_drafts(learner_id)[0]["feedback"] == ""
+    res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id,
+                                             draft_id=draft_id))
+    feedback = tmp_db.get_drafts(learner_id)[0]["feedback"]
+    assert feedback
+    assert res["twin_note"] in feedback
+    assert res["comparison"] in feedback
+
+
 def test_write_shows_comparison_and_level_changes():
     write = (ROOT / "frontend" / "src" / "screens" / "Write.jsx").read_text(encoding="utf-8")
     assert "result.comparison" in write and "level_changes" in write

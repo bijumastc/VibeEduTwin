@@ -196,22 +196,45 @@ def test_independence_improving(tmp_db):
     _start(learner_id)  # no help
     res = main.get_independence(learner_id)
     assert res["attempts"] == 3
-    assert (res["recent_helps"], res["previous_helps"]) == (0, 1)
-    assert res["trend"] == "improving"
-    assert "Working more independently" in res["message"]
+    assert res["hints"] == [2, 1, 0]
+    assert res["improving"] is True
+    assert res["message"] == "Hints used: 2 → 1 → 0"
 
 
 def test_independence_new_and_steady(tmp_db):
     fresh = _learner(tmp_db)
-    assert main.get_independence(fresh)["trend"] == "new"
+    res = main.get_independence(fresh)
+    assert res["hints"] == [] and res["improving"] is False
+    assert res["message"] == "Try a module task to start tracking."
     steady = _learner(tmp_db)
     for _ in range(2):
         attempt = _start(steady)["attempt_id"]
         _help(steady, attempt)
-    assert main.get_independence(steady)["trend"] == "steady"
+    res = main.get_independence(steady)
+    assert res["hints"] == [1, 1]
+    assert res["improving"] is False
     with pytest.raises(HTTPException) as exc:
         main.get_independence(999)
     assert exc.value.status_code == 404
+
+
+def test_independence_encourages_unless_falling(tmp_db):
+    rising = _learner(tmp_db)
+    first = _start(rising)["attempt_id"]
+    _help(rising, first)  # 1 hint
+    second = _start(rising)["attempt_id"]
+    _help(rising, second)
+    main.post_scaffold_show(main.ScaffoldShowIn(
+        learner_id=rising, attempt_id=second))  # hint + show-me
+    res = main.get_independence(rising)
+    assert res["hints"] == [1, 2]
+    assert res["improving"] is False
+    calm = _learner(tmp_db)
+    _start(calm)
+    _start(calm)  # no help at all
+    res = main.get_independence(calm)
+    assert res["hints"] == [0, 0]
+    assert res["improving"] is True
 
 
 def test_steps_serve_sequential_worked_answer(tmp_db, monkeypatch):
@@ -357,8 +380,9 @@ def test_steps_count_as_help_in_independence(tmp_db):
     _start(learner_id)  # no help
     res = main.get_independence(learner_id)
     assert res["attempts"] == 2
-    assert (res["recent_helps"], res["previous_helps"]) == (0, 1)
-    assert res["trend"] == "improving"
+    assert res["hints"] == [1, 0]
+    assert res["improving"] is True
+    assert res["message"] == "Hints used: 1 → 0"
 
 
 def _assess_reply(status="ok", score=1, next_step="question", **over):
@@ -581,6 +605,14 @@ def test_scaffold_ui_strings():
         encoding="utf-8")
     assert "Working more independently" in growth
     assert "api.independence()" in growth
+
+
+def test_growth_hint_card_gates_heading():
+    growth = (ROOT / "frontend" / "src" / "screens" / "MyGrowth.jsx").read_text(
+        encoding="utf-8")
+    assert "Working more independently" in growth
+    assert "Hints help you learn - try one step on your own next time." in growth
+    assert "independence.improving" in growth
 
 
 # --- Retry bounds: 2 regens, then the fixed ladder -----------------------------

@@ -272,6 +272,15 @@ def get_drafts(learner_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def update_draft_feedback(draft_id: int, feedback: str) -> None:
+    """Stamp a diagnosis's feedback onto its draft."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE drafts SET feedback = ? WHERE id = ?",
+            (feedback, draft_id),
+        )
+
+
 # --- Event log ------------------------------------------------------------------
 def log_event(learner_id: int, step: str, agent: str, tool: str, result: str) -> int:
     """Append one audit row (practice-loop step); returns the new event id."""
