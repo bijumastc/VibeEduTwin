@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api } from '../api.js';
+import { api, levelName } from '../api.js';
 import HowScored from '../components/HowScored.jsx';
 
 // Teacher: one text box. Generate items built only from library excerpts,
@@ -91,7 +91,7 @@ export default function Teacher({ go }) {
             ))}
             {result.passed && (
               <p className="muted">
-                {result.items.length} items · {result.skill} · Level {result.level}
+                {result.items.length} items · {result.skill} · Level {result.level} {levelName(result.level)}
                 {result.discipline ? ` · ${result.discipline}` : ''}
                 {result.engine && result.engine !== 'template' ? ' · via Muse Spark' : ''}
               </p>

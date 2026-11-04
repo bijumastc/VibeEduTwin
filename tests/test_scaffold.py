@@ -759,3 +759,43 @@ def test_feedback_card_ui_strings():
     assert "FeedbackCard" in task and "modelSentence" in task
     assert "res.excerpt.label" in task and "Compare" in task
     assert "Your sentence:" in task
+
+
+# --- Guided vs challenge mode --------------------------------------------------
+def test_guided_mode_serves_idea_and_worked_example(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([], []))
+    view = _start(_learner(tmp_db))
+    assert view["mode"] == "guided"
+    assert view["idea"].strip()
+    assert view["worked_example"]["text"].strip()
+    assert view["worked_example"]["self_check"].strip()
+
+
+def test_guided_until_six_activities(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=8: ([], []))
+    learner_id = _learner(tmp_db, {"Paragraphing": 10})
+    for _ in range(5):
+        tmp_db.log_activity(learner_id, "Paragraphing", "write")
+    assert main.skill_mode(learner_id, "Paragraphing") == "guided"
+    tmp_db.log_activity(learner_id, "Paragraphing", "learn")
+    assert _start(learner_id)["mode"] == "challenge"
+
+
+def test_challenge_mode_from_level3(tmp_db):
+    learner_id = _learner(tmp_db, {"Paragraphing": 50})
+    view = _start(learner_id)
+    assert view["mode"] == "challenge"
+    assert "idea" not in view and "worked_example" not in view
+
+
+def test_guided_and_polish_ui_strings():
+    task = (ROOT / "frontend" / "src" / "components" / "ScaffoldTask.jsx"
+            ).read_text(encoding="utf-8")
+    assert "Guided mode" in task
+    assert "worked_example" in task and "self_check" in task
+    assert "Compare with a polished version" in task
+    assert "polishText" in task
+    api = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
+    assert "polishText" in api

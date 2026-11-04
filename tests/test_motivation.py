@@ -259,15 +259,33 @@ def test_polish_rejects_wrong_sizes(tmp_db, monkeypatch):
     assert res["ok"] is False  # far too short: rejected, then fallback
 
 
+def test_polish_accepts_raw_content(tmp_db, monkeypatch):
+    learner_id = _learner(tmp_db)
+
+    def fake_post(url, body, key, timeout):
+        return {"choices": [{"message": {"content": json.dumps(
+            {"polished": "Plants give us clean air daily."})}}]}
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_post", fake_post)
+    res = main.post_polish(main.PolishIn(learner_id=learner_id,
+                                         content="plants give clean air"))
+    assert res["ok"] is True
+    assert res["original"] == "plants give clean air"
+    assert res["polished"].strip()
+
+
 # --- Growth: daily goal ----------------------------------------------------------------
 def test_growth_reports_daily_goal(tmp_db):
     learner_id = _learner(tmp_db)
-    assert main.get_growth(learner_id)["daily"] == {"paragraphs": 0,
-                                                    "target": 3}
+    assert main.get_growth(learner_id)["daily"] == {"sessions": 0,
+                                                    "target": 3,
+                                                    "paragraphs": 0}
     store.save_draft(learner_id, "One.", "")
     store.save_draft(learner_id, "Two.", "")
-    assert main.get_growth(learner_id)["daily"] == {"paragraphs": 2,
-                                                    "target": 3}
+    assert main.get_growth(learner_id)["daily"] == {"sessions": 0,
+                                                    "target": 3,
+                                                    "paragraphs": 2}
 
 
 # --- UI strings ---------------------------------------------------------------------------

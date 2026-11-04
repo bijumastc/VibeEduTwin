@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, LeveledUp } from '../api.js';
+import { api, LeveledUp, levelName } from '../api.js';
 import SkillBars from '../components/SkillBars.jsx';
 
 // My Growth: skill chart on top, drafts with feedback below. The full chart
@@ -61,7 +61,7 @@ export default function MyGrowth({ go }) {
         <div className="card tint">
           <div className="card-title">Your chart unlocks at level 2</div>
           <p className="muted">
-            Current focus is {weakest} (Level {(state.growth.levels || {})[weakest] || 1} of 5).
+            Current focus is {weakest} (Level {(state.growth.levels || {})[weakest] || 1} of 5 · {levelName((state.growth.levels || {})[weakest] || 1)}).
             Pass two practice sets to level up.
           </p>
         </div>
@@ -75,7 +75,7 @@ export default function MyGrowth({ go }) {
             {Object.keys(levels).map((skill) => (
               <div key={skill}>
                 {skill}
-                <span className="level-chip">Level {levels[skill].level}</span>
+                <span className="level-chip">Level {levels[skill].level} · {levelName(levels[skill].level)}</span>
               </div>
             ))}
           </div>

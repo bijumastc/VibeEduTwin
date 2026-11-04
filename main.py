@@ -36,6 +36,7 @@ import asyncio
 import json
 import os
 import re
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 import uuid
@@ -149,7 +150,8 @@ class DiagnoseIn(BaseModel):
 
 class PolishIn(BaseModel):
     learner_id: int
-    draft_id: int
+    draft_id: int = 0
+    content: str = ""  # Learn path: polish the rewritten attempt, no draft
 
 
 class PracticeAnswersIn(BaseModel):
@@ -241,6 +243,66 @@ def weakest_skill(scores: dict[str, float]) -> tuple[str, int]:
         return "Paragraphing", 1
     skill = min(SKILLS, key=lambda s: scores.get(s, 0))
     return skill, level_for_score(scores.get(skill, 0))
+
+
+LEVEL_NAMES = {1: "Starter", 2: "Elementary", 3: "Intermediate",
+               4: "Upper-Intermediate", 5: "Advanced"}
+
+SESSION_WORD_TARGETS = {1: 50, 2: 80, 3: 120, 4: 160, 5: 200}
+SESSIONS_PER_DAY = 3
+GUIDED_ACTIVITIES = 6  # guided mode until 6 activities or Level 3
+
+
+def overall_level(levels: dict[str, int]) -> int:
+    """The learner's working level: the weakest skill's level (min 1)."""
+    return min([levels.get(s, 1) for s in SKILLS] or [1])
+
+
+def session_state(learner_id: int) -> dict:
+    """Today's session: unit at their level, 3 steps, sessions done of 3.
+
+    Derived from today's drafts and practice sets in time order, so
+    leaving mid-session resumes exactly where they stopped: step 1 needs
+    a paragraph on their discipline topic meeting the word target, step 2
+    a rewrite, step 3 one practice set.
+    """
+    learner = store.get_learner(learner_id) or {}
+    scores = latest_scores(learner_id)
+    levels = {s: level_for_score(v) for s, v in scores.items()}
+    overall = overall_level(levels)
+    today = datetime.now(timezone.utc).date().isoformat()
+    events = [(d["created_at"], "draft", d["content"])
+              for d in store.get_drafts(learner_id)
+              if d["created_at"][:10] == today]
+    events += [(r["created_at"], "practice", "")
+               for r in store.get_events(learner_id)
+               if r["tool"] == "score_answers" and r["step"] == "Practise"
+               and r["created_at"][:10] == today]
+    events.sort(key=lambda e: (e[0], 0 if e[1] == "draft" else 1))
+    target = SESSION_WORD_TARGETS[overall]
+    sessions_done, step, just_completed = 0, 1, False
+    for _, kind, content in events:
+        if sessions_done >= SESSIONS_PER_DAY:
+            break
+        just_completed = False
+        if step == 1 and kind == "draft" and len(content.split()) >= target:
+            step = 2
+        elif step == 2 and kind == "draft":
+            step = 3
+        elif step == 3 and kind == "practice":
+            sessions_done += 1
+            step = 1
+            just_completed = True
+    complete = sessions_done >= SESSIONS_PER_DAY
+    discipline = learner.get("discipline") or "Sciences"
+    return {"level": overall, "level_name": LEVEL_NAMES[overall],
+            "topic": DISCIPLINE_TOPICS.get(discipline, "your studies"),
+            "target": target, "sessions_done": sessions_done,
+            "sessions_target": SESSIONS_PER_DAY, "step": step,
+            "steps_done": [True, True, True] if complete
+            else [step > 1, step > 2, False],
+            "just_completed": just_completed and not complete,
+            "started": bool(events)}
 
 
 # Future-self next steps: specific, forward-looking, no shared struggle.
@@ -4760,6 +4822,7 @@ def post_diagnose(data: DiagnoseIn):
                 # the safe template now instead of another round of calls.
                 feedback = _template_feedback(detail, weakest_two, text)
     store.save_skill_scores(data.learner_id, scores, detail)
+    store.log_activity(data.learner_id, weakest, "write")
     level = level_for_score(scores[weakest])
     first = ((learner.get("name") or "friend").split() or ["friend"])[0]
     band = ("strong" if level >= 4 else "good" if level == 3
@@ -4862,14 +4925,17 @@ def post_polish(data: PolishIn):
     """Compare step: a polished rewrite, unlocked after their own rewrite."""
     if store.get_learner(data.learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
-    drafts = [d for d in store.get_drafts(data.learner_id)
-              if d["id"] == data.draft_id]
-    if not drafts:
-        raise HTTPException(status_code=404, detail="Unknown draft_id")
-    if len(store.get_drafts(data.learner_id)) < 2:
-        return {"ok": False,
-                "message": "Rewrite your paragraph first, then compare."}
-    polished = _polish_with_spark(drafts[0]["content"])
+    original = (data.content or "").strip()
+    if not original:
+        drafts = [d for d in store.get_drafts(data.learner_id)
+                  if d["id"] == data.draft_id]
+        if not drafts:
+            raise HTTPException(status_code=404, detail="Unknown draft_id")
+        if len(store.get_drafts(data.learner_id)) < 2:
+            return {"ok": False,
+                    "message": "Rewrite your paragraph first, then compare."}
+        original = drafts[0]["content"]
+    polished = _polish_with_spark(original)
     if polished is None:
         store.log_event(data.learner_id, "Write", "twin", "polish",
                         "polished version unavailable")
@@ -4878,7 +4944,7 @@ def post_polish(data: PolishIn):
                            "try again later."}
     store.log_event(data.learner_id, "Write", "twin", "polish",
                     f"draft_id={data.draft_id} words={len(polished.split())}")
-    return {"ok": True, "original": drafts[0]["content"], "polished": polished}
+    return {"ok": True, "original": original, "polished": polished}
 
 
 @app.get("/rubric")
@@ -5061,6 +5127,7 @@ def _serve_assessed(learner_id: int, attempt_id: str, attempt: dict,
     if judged["score"] == 2:
         judged["next_step"] = "done"
         attempt["step"] = "done"
+        store.log_activity(learner_id, attempt["skill"], "learn")
         return _scaffold_view(attempt_id, attempt, {
             "assessment": judged,
             "message": f"Well done. Your line '{judged['quote']}' does the "
@@ -5109,22 +5176,47 @@ def _serve_steps(learner_id: int, attempt_id: str, attempt: dict,
     return _scaffold_view(attempt_id, attempt, payload)
 
 
+def skill_mode(learner_id: int, skill: str) -> str:
+    """Guided until 6 activities in the skill; challenge from Level 3."""
+    level = level_for_score(latest_scores(learner_id).get(skill, 0.0))
+    if level >= 3:
+        return "challenge"
+    if store.count_activities(learner_id, skill) >= GUIDED_ACTIVITIES:
+        return "challenge"
+    return "guided"
+
+
 @app.post("/scaffold/start")
 def post_scaffold_start(data: ScaffoldStartIn):
-    """Scaffold step (a): hand out the task; the learner tries with no help."""
+    """Scaffold step (a): guided serves idea + worked example, else the task."""
     state, content = _module_state_or_raise(
         data.learner_id, data.discipline, data.module)
+    mode = skill_mode(data.learner_id, content["skill"])
     attempt_id = uuid.uuid4().hex[:8]
     SCAFFOLD_ATTEMPTS[attempt_id] = {
         "learner_id": data.learner_id, "discipline": data.discipline,
         "module": data.module, "skill": content["skill"],
         "level": state["learner_level"], "step": "try", "q_index": 0,
-        "shows": 0, "weak": 0,
+        "shows": 0, "weak": 0, "mode": mode,
     }
     store.log_event(data.learner_id, "Scaffold", "twin", "start",
-                    f"attempt_id={attempt_id} module={data.module}")
-    return _scaffold_view(attempt_id, SCAFFOLD_ATTEMPTS[attempt_id],
-                          {"level": state["learner_level"]})
+                    f"attempt_id={attempt_id} module={data.module} mode={mode}")
+    extra = {"level": state["learner_level"], "mode": mode}
+    if mode == "guided":
+        extra["idea"] = build_lesson(
+            data.discipline, data.module)["idea"]["text"]
+        model = worked_model(data.module, data.discipline)
+        verdict = verify("worked_model", {
+            "module": data.module, "model": model,
+            "task_topic": DISCIPLINE_TOPICS[data.discipline]})
+        if verdict["pass"]:
+            extra["worked_example"] = {
+                "text": model, "self_check": SELF_EXPLANATION}
+        else:
+            store.log_event(data.learner_id, "Scaffold", "twin",
+                            "verify-guided",
+                            f"attempt_id={attempt_id} failed={verdict['failed']}")
+    return _scaffold_view(attempt_id, SCAFFOLD_ATTEMPTS[attempt_id], extra)
 
 
 @app.post("/scaffold/help")
@@ -5211,6 +5303,7 @@ def post_scaffold_rewrite(data: ScaffoldRewriteIn):
     text = data.text.strip()
     judged = _judge_attempt(data.learner_id, attempt, text)
     attempt["step"] = "done"
+    store.log_activity(data.learner_id, attempt["skill"], "learn")
     words = len(text.split())
     store.log_event(data.learner_id, "Scaffold", "twin", "rewrite",
                     f"attempt_id={attempt_id} module={attempt['module']} words={words}")
@@ -5450,7 +5543,7 @@ def _review_set(discipline: str, level: int, earlier: list[dict],
 
 @app.get("/practice")
 def get_practice(learner_id: int):
-    """Practise step: a short set for the weakest skill and level (no answers).
+    """Practise step: a short set on the next-win skill and level (no answers).
 
     A published teacher set wins when one matches skill + level (+ discipline).
     Otherwise a moduled skill gets a generated 4-type set, or a mixed review
@@ -5460,7 +5553,15 @@ def get_practice(learner_id: int):
     if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     discipline = learner.get("discipline") or "Sciences"
-    skill, level = weakest_skill(latest_scores(learner_id))
+    saved = latest_scores(learner_id)
+    if not saved:
+        skill, level = "Paragraphing", 1
+    else:
+        levels = {s: level_for_score(v) for s, v in saved.items()}
+        drafts = store.get_drafts(learner_id)
+        latest = drafts[-1]["content"] if drafts else ""
+        skill = next_win_skill(levels, latest)
+        level = levels.get(skill, 1)
     demo = _demo_mode() and skill == "Paragraphing" and level == 1
     published = None if demo else store.get_teacher_set(skill, level, discipline)
     review: list[dict] | None = None
@@ -5498,7 +5599,8 @@ def get_practice(learner_id: int):
         excerpt_word = "excerpt" if len(sources) == 1 else "excerpts"
         store.log_event(
             learner_id, "Practise", "teacher", "teacher-set",
-            f"Teacher set on {skill} Level {level}: {len(items)} items built "
+            f"Teacher set on {skill} Level {level} ({LEVEL_NAMES[level]}): "
+            f"{len(items)} items built "
             f"from {len(sources)} {excerpt_word}, verifier passed, published.")
     set_id = uuid.uuid4().hex[:8]
     ISSUED_SETS[set_id] = {"learner_id": learner_id, "skill": skill,
@@ -5573,6 +5675,7 @@ def post_answers(data: PracticeAnswersIn):
                     f"leveled_up={bool(level_ups)}")
     store.log_event(data.learner_id, "Practise", "twin", "assess",
                     f"assessed {total} answers")
+    store.log_activity(data.learner_id, skill, "practice")
     level = level_for_score(new_score) if new_score is not None \
         else level_for_score(latest_scores(data.learner_id).get(skill, 0))
     return {"correct": correct, "total": total, "accuracy": accuracy,
@@ -5616,8 +5719,10 @@ def get_growth(learner_id: int):
                                       "evidence": row.get("evidence")}
         history.setdefault(row["skill_name"], []).append(
             {"score": row["score"], "date": row["date"]})
-    daily = {"paragraphs": store.count_drafts_today(learner_id),
-             "target": 3}
+    session = session_state(learner_id)
+    daily = {"sessions": session["sessions_done"], "target": SESSIONS_PER_DAY,
+             "paragraphs": store.count_drafts_today(learner_id)}
+    overall = overall_level(levels)
     strongest = next_win = None
     if levels:
         best = max(SKILLS, key=lambda s: levels.get(s, 1))
@@ -5636,7 +5741,9 @@ def get_growth(learner_id: int):
                     "quote": _first_words(evidence, 12)}
     return {"learner_id": learner_id, "scores": scores, "levels": levels,
             "details": details, "history": history,
-            "strongest": strongest, "next_win": next_win, "daily": daily}
+            "overall": {"level": overall, "name": LEVEL_NAMES[overall]},
+            "strongest": strongest, "next_win": next_win, "daily": daily,
+            "session": session}
 
 
 def independence(learner_id: int) -> dict:

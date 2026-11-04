@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { api } from '../api.js';
+import { api, levelName } from '../api.js';
 import CompactLesson from '../components/CompactLesson.jsx';
 import FeedbackCard from '../components/FeedbackCard.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
@@ -194,7 +194,7 @@ export default function Write({ go }) {
         <>
           <div className="card tint">
             <div className="card-title">Weakest skill: {result.weakest}</div>
-            <p className="muted">Level {result.level} of 5</p>
+            <p className="muted">Level {result.level} of 5 · {levelName(result.level)}</p>
             {result.notice && <p className="muted">{result.notice}</p>}
           </div>
           <div className="card">

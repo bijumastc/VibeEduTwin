@@ -15,6 +15,9 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [lastTry, setLastTry] = useState('');
+  const [polish, setPolish] = useState(null);
+  const [polishBusy, setPolishBusy] = useState(false);
 
   useEffect(() => {
     api.scaffoldStart(discipline, moduleId)
@@ -86,14 +89,27 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
   const help = () => {
     const text = draft;
     setDraft('');
+    if (text.trim()) setLastTry(text.trim());
     call(() => api.scaffoldHelp(view.attempt_id, text), text);
   };
   const show = () => call(() => api.scaffoldShow(view.attempt_id));
   const steps = () => call(() => api.scaffoldSteps(view.attempt_id));
   const rewrite = () => {
     const text = draft;
+    if (text.trim()) setLastTry(text.trim());
     call(() => api.scaffoldRewrite(view.attempt_id, text), text);
     setDraft('');
+  };
+  const compare = async () => {
+    if (polishBusy || !lastTry) return;
+    setPolishBusy(true);
+    try {
+      const res = await api.polishText(lastTry);
+      setPolish(res.ok ? res : { error: res.message });
+    } catch (err) {
+      setPolish({ error: err.message });
+    }
+    setPolishBusy(false);
   };
 
   if (error) {
@@ -114,6 +130,25 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
     <div>
       <h2>{moduleTitle}</h2>
       {busy && <p className="loading">Your twin is reading your writing...</p>}
+      {view.mode === 'guided' && (
+        <div className="card tint">
+          <div className="card-title">Guided mode</div>
+          <p className="muted">Read the idea and the example first, then try the task.</p>
+        </div>
+      )}
+      {view.mode === 'guided' && view.idea && (
+        <div className="card">
+          <div className="card-title">The idea</div>
+          <p>{view.idea}</p>
+        </div>
+      )}
+      {view.mode === 'guided' && view.worked_example && (
+        <div className="card">
+          <div className="card-title">Worked example — a different topic</div>
+          <p>{view.worked_example.text}</p>
+          <p className="muted">{view.worked_example.self_check}</p>
+        </div>
+      )}
       <div className="card tint">
         <div className="card-title">Your task</div>
         <p>{view.task}</p>
@@ -210,6 +245,27 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
             Submit rewrite
           </button>
         </>
+      )}
+
+      {done && lastTry && !polish && (
+        <>
+          <div style={{ height: 10 }} />
+          <button className="btn secondary" onClick={compare} disabled={polishBusy}>
+            {polishBusy ? 'Polishing…' : 'Compare with a polished version'}
+          </button>
+        </>
+      )}
+      {polish && polish.polished && (
+        <div className="card accent-soft">
+          <div className="card-title">Polished version</div>
+          <p className="muted">Yours: {polish.original}</p>
+          <p>{polish.polished}</p>
+        </div>
+      )}
+      {polish && polish.error && (
+        <div className="card warn">
+          <p className="muted">{polish.error}</p>
+        </div>
       )}
 
       <div style={{ height: 10 }} />

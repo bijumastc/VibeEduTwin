@@ -155,3 +155,14 @@ def test_write_ui_strings():
     assert "textarea" in practice
     assert "Save & continue" in practice
     assert "Review set" in practice
+
+
+def test_practice_targets_next_win_not_weakest(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", _rich_query)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    scores = {s: 50 for s in main.SKILLS} | {"Using sources": 0,
+                                             "Paragraphing": 10}
+    learner_id = _learner(tmp_db, scores)
+    tmp_db.save_draft(learner_id, "I like plants. They are green.", "")
+    body = main.get_practice(learner_id)
+    assert body["skill"] == "Paragraphing"  # next win, not Using sources

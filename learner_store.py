@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS practice_results (
     accuracy REAL NOT NULL,
     date TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    learner_id INTEGER NOT NULL REFERENCES learners(id),
+    skill_name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -323,6 +330,26 @@ def count_drafts_today(learner_id: int) -> int:
             "SELECT COUNT(*) FROM drafts WHERE learner_id = ?"
             " AND date(created_at) = date('now')",
             (learner_id,),
+        ).fetchone()[0]
+
+
+def log_activity(learner_id: int, skill: str, source: str) -> None:
+    """One completed activity (write/learn/practice) toward guided mode."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO activity_log (learner_id, skill_name, source,"
+            " created_at) VALUES (?, ?, ?, ?)",
+            (learner_id, skill, source, _utcnow()),
+        )
+
+
+def count_activities(learner_id: int, skill: str) -> int:
+    """Completed activities in one skill (guided until 6)."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM activity_log WHERE learner_id = ?"
+            " AND skill_name = ?",
+            (learner_id, skill),
         ).fetchone()[0]
 
 

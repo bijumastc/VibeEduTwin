@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, OpenModule } from '../api.js';
+import { api, OpenModule, levelName } from '../api.js';
 import LessonView from '../components/LessonView.jsx';
 
 // Learn: curriculum of 6 disciplines x 9 ordered modules. The learner's own
@@ -82,7 +82,7 @@ export default function Learn({ go }) {
           >
             {m.title}
             {m.recommended && <span className="focus-tag">Recommended for you</span>}
-            <span className="level-chip">Level {m.learner_level}</span>
+            <span className="level-chip">Level {m.learner_level} · {levelName(m.learner_level)}</span>
           </button>
         </div>
       ))}

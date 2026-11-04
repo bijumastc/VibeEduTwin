@@ -258,3 +258,28 @@ Expected comparison: "In your last paragraph you had no clear topic
 sentence; this time your first sentence names the problem and the
 place." Other skills keep their heuristic levels; Paragraphing is
 pinned to 2. Paragraphing 1 → 2.
+
+## Daily structure
+
+Named levels, shown everywhere a level appears (chips, bars, Practice,
+Write, Teacher): L1 Starter, L2 Elementary, L3 Intermediate,
+L4 Upper-Intermediate, L5 Advanced. The learner's overall level is the
+weakest skill's level.
+
+"Today's session" on My Level is one unit at the learner's level:
+(1) write a paragraph on their discipline topic with a word target by
+level (50 / 80 / 120 / 160 / 200); (2) read the feedback and fix it;
+(3) one short practice set on their next win. Then "Session complete!"
+with the goodbye summary. The daily goal is 3 sessions, shown as 3
+dots. Leaving mid-session shows "Continue today's session" on return.
+Learn and Practice stay open for anyone who wants more.
+
+## Guided and challenge modes
+
+Each skill starts in guided mode until the learner completes 6
+activities in it (a Write submission, Learn task, or practice set
+counts as one): the idea and one worked example (different topic) come
+first, then the task, then full feedback with "Compare with a polished
+version" after the rewrite. After 6 activities, or from Level 3,
+the skill switches to challenge mode: the productive-struggle ladder
+with "Show me now" available.

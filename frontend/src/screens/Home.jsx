@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, OpenModule } from '../api.js';
+import { api, OpenModule, levelName } from '../api.js';
 import Confetti from '../components/Confetti.jsx';
 
 // My Level: hero for new learners, writing-profile card after diagnosis.
@@ -32,12 +32,14 @@ export default function Home({ go }) {
   if (state.loading) return <p className="loading">Loading…</p>;
   if (state.error) return <div className="error">{state.error}</div>;
 
-  const daily = state.growth?.daily || { paragraphs: 0, target: 3 };
+  const daily = state.growth?.daily || { sessions: 0, target: 3, paragraphs: 0 };
   const dailyLine = (
     <div className="card">
-      <p className="muted">Daily goal: {Math.min(daily.paragraphs, daily.target)} of {daily.target} paragraphs today</p>
-      <div className="bar">
-        <div style={{ width: `${Math.min(100, (daily.paragraphs / daily.target) * 100)}%` }} />
+      <p className="muted">Daily goal: {Math.min(daily.sessions, daily.target)} of {daily.target} sessions today</p>
+      <div className="dots" aria-label={`${daily.sessions} of ${daily.target} sessions done`}>
+        {[0, 1, 2].map((i) => (
+          <span key={i}>{i < daily.sessions ? '●' : '○'}</span>
+        ))}
       </div>
     </div>
   );
@@ -79,12 +81,14 @@ export default function Home({ go }) {
   }
 
   const levels = state.growth.levels || {};
-  const { strongest, next_win } = state.growth;
+  const { strongest, next_win, session } = state.growth;
   const leveled = state.levels.leveled_up || [];
   const openModule = (moduleId) => {
     OpenModule.set(moduleId);
     go('learn');
   };
+  const sessionDone = session && session.sessions_done >= session.sessions_target;
+  const sessionSteps = ['Write your paragraph', 'Read feedback and fix it', 'One short practice set'];
 
   return (
     <div>
@@ -95,6 +99,26 @@ export default function Home({ go }) {
           <div className="levelup">Level up in {leveled.join(', ')}! See My Growth.</div>
         </>
       )}
+      {session && (
+        <div className="card tint">
+          <div className="card-title">Today&apos;s session</div>
+          <p className="muted">
+            Level {session.level} {session.level_name} · write about {session.topic} · {session.target} words
+          </p>
+          {sessionSteps.map((label, i) => (
+            <p className="muted" key={label}>
+              {session.steps_done[i] ? '✓' : (session.step === i + 1 && !sessionDone ? '→' : '·')} {label}
+            </p>
+          ))}
+          {sessionDone ? (
+            <p><strong>Session complete! 🎉</strong> {daily.paragraphs} paragraph{daily.paragraphs === 1 ? '' : 's'} today. Next time: {next_win.action}.</p>
+          ) : (
+            <button className="btn" onClick={() => go('write')}>
+              {session.started ? "Continue today's session" : "Start today's session"}
+            </button>
+          )}
+        </div>
+      )}
       <div className="card tint">
         <div className="card-title">Your writing profile</div>
         {ORDER.filter((s) => levels[s] !== undefined).map((skill) => (
@@ -104,7 +128,7 @@ export default function Home({ go }) {
             onClick={() => openModule(SKILL_MODULE[skill])}
           >
             {skill}
-            <span className="level-chip">Level {levels[skill]} of 5</span>
+            <span className="level-chip">Level {levels[skill]} of 5 · {levelName(levels[skill])}</span>
           </button>
         ))}
       </div>

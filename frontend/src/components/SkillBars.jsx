@@ -1,5 +1,7 @@
 // Skill rows: Level X of 5 with the Diagnoser's reason and evidence quote.
 // Weakest skill gets a "focus" tag; level changes add previous → current.
+import { levelName } from '../api.js';
+
 const ORDER = ['Grammar', 'Vocabulary', 'Sentence structure', 'Paragraphing',
   'Argument', 'Using sources', 'Academic tone'];
 
@@ -29,8 +31,8 @@ export default function SkillBars({ scores, weakest, levels, details }) {
               </span>
               <span>
                 {previous != null && previous !== current
-                  ? `Level ${previous} → ${current} of 5`
-                  : `Level ${current} of 5`}
+                  ? `Level ${previous} → ${current} of 5 · ${levelName(current)}`
+                  : `Level ${current} of 5 · ${levelName(current)}`}
               </span>
             </div>
             <div className="bar">

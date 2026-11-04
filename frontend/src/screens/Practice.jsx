@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, LeveledUp } from '../api.js';
+import { api, LeveledUp, levelName } from '../api.js';
 import Confetti from '../components/Confetti.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
 import ScanButton from '../components/ScanButton.jsx';
@@ -36,7 +36,7 @@ function LevelUpCard({ ups, go }) {
       <Confetti key={ups.map((up) => up.skill).join(',')} />
       {ups.map((up) => (
         <div className="card-title" key={up.skill}>
-          {up.skill} Level {up.from} → {up.to}
+          {up.skill} Level {up.from} → {up.to} · {levelName(up.to)}
         </div>
       ))}
       {growth && names.length > 0 && (
@@ -121,7 +121,7 @@ export default function Practice({ go }) {
         )}
         <div className="card tint">
           <div className="score-big">{result.correct} of {result.total} right</div>
-          <p className="muted">{result.skill} · Level {result.level} of 5</p>
+          <p className="muted">{result.skill} · Level {result.level} of 5 · {levelName(result.level)}</p>
         </div>
         {result.details.filter((d) => !d.correct).map((d) => (
           <div className="card warn" key={d.id}>
@@ -147,7 +147,7 @@ export default function Practice({ go }) {
   return (
     <div>
       <h2>Practice: {set.skill}</h2>
-      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level}{set.discipline ? ` · ${set.discipline}` : ''}{set.published ? ' · Teacher set' : ''}{set.review ? ' · Review set' : ''}</div>
+      <div className="progress">Question {index + 1} of {set.items.length} · Level {set.level} {levelName(set.level)}{set.discipline ? ` · ${set.discipline}` : ''}{set.published ? ' · Teacher set' : ''}{set.review ? ' · Review set' : ''}</div>
       <div className="card">
         {item.kind && <p className="muted">{KIND_LABELS[item.kind] || item.kind}</p>}
         <p>{item.prompt}</p>

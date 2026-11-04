@@ -4,6 +4,16 @@
 // Demo learner id. Run `python scripts/reset_demo.py` to create learner 1.
 export const LEARNER_ID = 1;
 
+// Named levels, mirroring the backend LEVEL_NAMES.
+export const LEVEL_NAMES = {
+  1: 'Starter',
+  2: 'Elementary',
+  3: 'Intermediate',
+  4: 'Upper-Intermediate',
+  5: 'Advanced',
+};
+export const levelName = (n) => LEVEL_NAMES[n] || '';
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
 async function request(path, options = {}) {
@@ -38,6 +48,7 @@ export const api = {
   scanPaper: (image) => post('/drafts/scan', { image }),
   diagnose: (draft_id) => post('/diagnose', { draft_id }),
   polish: (draft_id) => post('/polish', { draft_id }),
+  polishText: (content) => post('/polish', { content }),
   getPractice: () => request(`/practice?learner_id=${LEARNER_ID}`),
   submitAnswers: (set_id, answers) => post('/practice/answers', { set_id, answers }),
   levelCheck: () => post('/level-check', {}),
