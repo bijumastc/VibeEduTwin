@@ -159,7 +159,8 @@ def test_tabs_are_home_write_learn_practice_growth():
 def test_learn_screen_is_discipline_curriculum():
     learn = (ROOT / "frontend" / "src" / "screens" / "Learn.jsx").read_text(encoding="utf-8")
     assert "api.curriculum()" in learn and "api.moduleContent(" in learn
-    assert "current" in learn and "Locked" in learn
+    assert "Recommended for you" in learn and "m.recommended" in learn
+    assert "Locked" not in learn and "disabled" not in learn
     assert "res.discipline" in learn  # learner's discipline opens by default
     assert "LessonView" in learn
     assert not (ROOT / "frontend" / "src" / "components" / "LearnCard.jsx").exists()

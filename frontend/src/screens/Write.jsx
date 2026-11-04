@@ -141,6 +141,7 @@ export default function Write({ go }) {
           <button className="btn" onClick={submit} disabled={busy || !text.trim()}>
             {scanned ? 'This is what I wrote' : (busy ? 'Checking…' : 'Submit')}
           </button>{' '}
+          {busy && <p className="loading">Your twin is reading your writing...</p>}
           <VoiceButton
             disabled={busy}
             onTranscript={(spoken) => setText((prev) => (prev ? `${prev} ${spoken}` : spoken))}

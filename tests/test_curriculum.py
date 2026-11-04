@@ -48,9 +48,10 @@ def test_six_disciplines_with_genres():
     }
 
 
-def test_six_modules_in_order_with_genre_last():
+def test_nine_modules_in_order_with_genre_last():
     shared = ["Topic sentences", "Thesis statements", "Developing paragraphs",
-              "Coherence and flow", "Using sources"]
+              "Coherence and flow", "Using sources", "Mechanics",
+              "Referencing styles", "Academic vocabulary"]
     genres = {"Sciences": "Lab reports", "Technology": "Technical reports",
               "Medicine": "Case reports", "Arts & Humanities": "Essays",
               "Commerce & Management": "Business reports",
@@ -60,7 +61,8 @@ def test_six_modules_in_order_with_genre_last():
         assert [m["title"] for m in modules] == shared + [genres[discipline]]
         assert [m["id"] for m in modules] == [
             "topic-sentences", "thesis-statements", "developing-paragraphs",
-            "coherence-flow", "using-sources", "genre"]
+            "coherence-flow", "using-sources", "mechanics",
+            "referencing-styles", "academic-vocabulary", "genre"]
 
 
 def test_curriculum_echoes_learner_discipline(tmp_db):
@@ -73,36 +75,28 @@ def test_curriculum_echoes_learner_discipline(tmp_db):
     assert exc.value.status_code == 404
 
 
-# --- Unlock order --------------------------------------------------------
-def test_fresh_learner_unlocks_first_module_only(tmp_db):
+# --- Open curriculum + recommended module ------------------------------------
+def test_all_modules_open_for_fresh_learner(tmp_db):
     states = main.get_curriculum(_learner(tmp_db))["disciplines"][0]["modules"]
-    assert [s["unlocked"] for s in states] == [True, False, False, False, False, False]
-    assert [s["id"] for s in states if s["current"]] == ["topic-sentences"]
+    assert all(s["unlocked"] for s in states)
+    assert [s["id"] for s in states if s["recommended"]] == ["topic-sentences"]
 
 
-def test_unlocks_follow_levels_in_order(tmp_db):
+def test_recommended_follows_weakest_skill(tmp_db):
     learner_id = _learner(tmp_db)
-    store.save_skill_scores(learner_id, {"Paragraphing": 50, "Argument": 50})
-    states = main.get_curriculum(learner_id)["disciplines"][0]["modules"]
-    assert [s["unlocked"] for s in states] == [True, True, True, False, False, False]
-    assert [s["id"] for s in states if s["current"]] == ["developing-paragraphs"]
-
-
-def test_later_modules_stay_locked_behind_order(tmp_db):
-    learner_id = _learner(tmp_db)
-    store.save_skill_scores(learner_id, {"Sentence structure": 90,
-                                         "Using sources": 90, "Academic tone": 90})
-    states = main.get_curriculum(learner_id)["disciplines"][0]["modules"]
-    assert [s["unlocked"] for s in states] == [True, False, False, False, False, False]
-    assert [s["id"] for s in states if s["current"]] == ["topic-sentences"]
-
-
-def test_maxed_learner_reaches_genre_module(tmp_db):
-    learner_id = _learner(tmp_db)
-    store.save_skill_scores(learner_id, {s: 85 for s in main.SKILLS})
+    store.save_skill_scores(learner_id, {s: 70 for s in main.SKILLS}
+                            | {"Using sources": 10})
     states = main.get_curriculum(learner_id)["disciplines"][0]["modules"]
     assert all(s["unlocked"] for s in states)
-    assert [s["id"] for s in states if s["current"]] == ["genre"]
+    assert [s["id"] for s in states if s["recommended"]] == ["using-sources"]
+
+
+def test_recommended_picks_first_module_of_weakest_skill(tmp_db):
+    learner_id = _learner(tmp_db)
+    store.save_skill_scores(learner_id, {s: 70 for s in main.SKILLS}
+                            | {"Paragraphing": 10})
+    states = main.get_curriculum(learner_id)["disciplines"][0]["modules"]
+    assert [s["id"] for s in states if s["recommended"]] == ["topic-sentences"]
 
 
 # --- Lesson content -------------------------------------------------------
@@ -142,12 +136,30 @@ def test_module_content_falls_back_to_no_verified(tmp_db, monkeypatch):
     assert res["based_on"] == []
 
 
-def test_locked_module_returns_403(tmp_db):
+def test_new_modules_build_lessons_and_tasks(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides", lambda query, n_results=8: ([], []))
     learner_id = _learner(tmp_db)
-    with pytest.raises(HTTPException) as exc:
-        main.get_curriculum_module(learner_id, "Sciences", "thesis-statements")
-    assert exc.value.status_code == 403
-    assert "Level 2" in exc.value.detail and "Argument" in exc.value.detail
+    skills = {"mechanics": "Grammar", "referencing-styles": "Using sources",
+              "academic-vocabulary": "Vocabulary"}
+    ids = [m["id"] for m in main.get_curriculum(learner_id)["disciplines"][0]
+           ["modules"]]
+    assert len(ids) == 9
+    for module_id, skill in skills.items():
+        assert module_id in ids
+        lesson = main.get_curriculum_module(
+            learner_id, "Sciences", module_id)
+        assert lesson["skill"] == skill
+        assert lesson["idea"]["text"] == main.NO_VERIFIED_EXAMPLE
+        assert lesson["task"].strip() and lesson["why"].strip()
+        view = main.post_scaffold_start(main.ScaffoldStartIn(
+            learner_id=learner_id, discipline="Sciences", module=module_id))
+        assert view["step"] == "try" and view["task"].strip()
+
+
+def test_every_module_opens_without_scores(tmp_db):
+    learner_id = _learner(tmp_db)
+    res = main.get_curriculum_module(learner_id, "Sciences", "thesis-statements")
+    assert res["title"] == "Thesis statements"
 
 
 def test_module_errors(tmp_db):
@@ -211,7 +223,7 @@ def test_report_lists_gaps():
                 "chapter": "Ch 1", "license": "CC BY"}
 
     rows = curriculum_report.build_coverage(fake_excerpt)
-    assert len(rows) == 36  # 6 disciplines x 6 modules
+    assert len(rows) == 54  # 6 disciplines x 9 modules
     assert all(r["rule_ok"] for r in rows)
     assert not any(r["example_ok"] for r in rows)
     assert rows[0]["discipline"] == "Sciences"

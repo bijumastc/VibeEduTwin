@@ -290,3 +290,17 @@ def test_scan_ui_strings():
     assert "Please type your paragraph." in write
     api = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
     assert "scanPaper" in api and "/drafts/scan" in api
+
+
+def test_scan_and_voice_on_learn_and_practice_boxes():
+    comp = ROOT / "frontend" / "src" / "components"
+    scan = (comp / "ScanButton.jsx").read_text(encoding="utf-8")
+    assert "Scan my paper" in scan and "scanPaper" in scan
+    assert "1000000" in scan
+    task = (comp / "ScaffoldTask.jsx").read_text(encoding="utf-8")
+    assert "VoiceButton" in task and "ScanButton" in task
+    practice = (ROOT / "frontend" / "src" / "screens" / "Practice.jsx"
+                ).read_text(encoding="utf-8")
+    assert "VoiceButton" in practice and "ScanButton" in practice
+    twin = (comp / "TwinPanel.jsx").read_text(encoding="utf-8")
+    assert "ScanButton" in twin  # Speak was already there

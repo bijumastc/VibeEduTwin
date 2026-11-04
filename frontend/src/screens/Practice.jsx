@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api, LeveledUp } from '../api.js';
 import HowItDecided from '../components/HowItDecided.jsx';
+import ScanButton from '../components/ScanButton.jsx';
 import SkillBars from '../components/SkillBars.jsx';
 import TwinPanel from '../components/TwinPanel.jsx';
+import VoiceButton from '../components/VoiceButton.jsx';
 
 // Practice: one item at a time, tap to answer, score at the end.
 // Each answer carries the twin's assessment; repeated wrongs offer Learn.
@@ -155,6 +157,14 @@ export default function Practice({ go }) {
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Write here…"
           />
+          <VoiceButton
+            onTranscript={(spoken) => setDraft((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+          />{' '}
+          <ScanButton
+            onTranscript={(scanned) => setDraft((prev) => (prev ? `${prev} ${scanned}` : scanned))}
+            onError={setError}
+          />
+          <div style={{ height: 10 }} />
           <button className="btn" onClick={saveWrite}>Save & continue</button>
         </>
       ) : (

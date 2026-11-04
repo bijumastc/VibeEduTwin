@@ -62,7 +62,7 @@ def test_start_hands_out_task_with_no_help(tmp_db):
     assert exc.value.status_code == 404
 
 
-def test_start_rejects_bad_or_locked_module(tmp_db):
+def test_start_rejects_bad_module_but_no_locks(tmp_db):
     learner_id = _learner(tmp_db)
     with pytest.raises(HTTPException) as bad_disc:
         main.post_scaffold_start(main.ScaffoldStartIn(
@@ -72,9 +72,7 @@ def test_start_rejects_bad_or_locked_module(tmp_db):
         main.post_scaffold_start(main.ScaffoldStartIn(
             learner_id=learner_id, discipline="Sciences", module="spelling"))
     assert bad_mod.value.status_code == 404
-    with pytest.raises(HTTPException) as locked:
-        _start(learner_id, "thesis-statements")
-    assert locked.value.status_code == 403
+    assert _start(learner_id, "thesis-statements")["step"] == "try"
 
 
 def test_level1_gets_hint_immediately(tmp_db):
@@ -150,7 +148,7 @@ def test_show_me_jumps_to_excerpt(tmp_db, monkeypatch):
         learner_id=learner_id, attempt_id=attempt))
     assert shown["step"] == "excerpt"
     assert shown["excerpt"]["source"] == "guide.pdf"
-    assert shown["self_explanation"] == "In one line, why does this example work?"
+    assert shown["self_explanation"] == "Why does this work?"
 
 
 def test_foreign_attempt_rejected(tmp_db):
@@ -399,7 +397,8 @@ def _assess_reply(status="ok", score=1, next_step="question", **over):
 
 def _keyed_assessor(monkeypatch, reply):
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
-    monkeypatch.setattr(main, "_spark_chat", lambda messages: reply)
+    monkeypatch.setattr(main, "_spark_chat",
+                        lambda messages, timeout=None: reply)
 
 
 def test_assessed_weak_try_serves_question_and_scores(tmp_db, monkeypatch):
@@ -422,15 +421,15 @@ def test_assessed_weak_try_serves_question_and_scores(tmp_db, monkeypatch):
     assert _help(learner_id, attempt)["step"] == "hint"  # ladder continues
 
 
-def test_good_answer_moves_to_rewrite(tmp_db, monkeypatch):
+def test_good_answer_praised_and_done(tmp_db, monkeypatch):
     _keyed_assessor(monkeypatch, _assess_reply(
         score=2, next_step="hint", problem="Your point is clear in \"rises fast\".",
         quote="rises fast", next_action="Keep this line as your opener."))
     learner_id = _learner(tmp_db)
     attempt = _start(learner_id)["attempt_id"]
     helped = _help(learner_id, attempt, "Evaporation rises fast on hot days.")
-    assert helped["step"] == "rewrite"
-    assert "final version" in helped["prompt"]
+    assert helped["step"] == "done"
+    assert "Marked done" in helped["message"]
     assert helped["assessment"]["score"] == 2
     assert helped["assessment"]["skill_score"] == 10
 
@@ -491,13 +490,18 @@ def test_off_task_attempt_asks_for_real_try(tmp_db, monkeypatch):
     assert "evaporation" in helped["assessment"]["feedback"]
 
 
-def test_no_key_keeps_fixed_ladder(tmp_db, monkeypatch):
+def test_no_key_assesses_with_fallback(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "_model_api_key", lambda: None)
     learner_id = _learner(tmp_db)
     attempt = _start(learner_id)["attempt_id"]
     helped = _help(learner_id, attempt, "Plants need sun to grow tall daily.")
-    assert helped["step"] == "hint"
-    assert "assessment" not in helped
+    assert helped["assessment"]["score"] == 1
+    assert helped["step"] == "question"
+    assert "Plants need sun to grow tall" in helped["question"]
+    bare = _start(learner_id)["attempt_id"]
+    fixed = _help(learner_id, bare)  # no try: fixed ladder still runs
+    assert fixed["step"] == "hint"
+    assert "assessment" not in fixed
 
 
 def test_level5_assessed_hint_becomes_question(tmp_db, monkeypatch):
@@ -615,11 +619,11 @@ def test_growth_hint_card_gates_heading():
     assert "independence.improving" in growth
 
 
-# --- Retry bounds: 2 regens, then the fixed ladder -----------------------------
-def test_assessor_retries_twice_then_fixed_ladder(tmp_db, monkeypatch):
+# --- Retry bounds: 2 regens, then the deterministic fallback --------------------
+def test_assessor_retries_twice_then_fallback(tmp_db, monkeypatch):
     calls = []
 
-    def bad_chat(messages):
+    def bad_chat(messages, timeout=None):
         calls.append(messages)
         return "nope"
 
@@ -629,15 +633,31 @@ def test_assessor_retries_twice_then_fixed_ladder(tmp_db, monkeypatch):
     attempt = _start(learner_id)["attempt_id"]
     helped = _help(learner_id, attempt, "Plants need sun to grow tall.")
     assert len(calls) == 3  # 1 initial + 2 regens
-    assert helped["step"] == "hint"  # L1 fixed ladder, no assessment
-    assert "assessment" not in helped
+    assert helped["assessment"]["score"] == 1  # deterministic fallback
+    assert helped["step"] == "question"
+
+
+def test_assessor_uses_slow_timeout(tmp_db, monkeypatch):
+    seen = []
+
+    def fake_post(url, body, key, timeout):
+        seen.append(timeout)
+        return {"choices": [{"message": {"content": _assess_reply()}}]}
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_post", fake_post)
+    learner_id = _learner(tmp_db, {"Paragraphing": 25})
+    attempt = _start(learner_id)["attempt_id"]
+    helped = _help(learner_id, attempt, "Plants need sun to grow tall.")
+    assert seen == [main.SPARK_TIMEOUT_SLOW] == [40]
+    assert helped["assessment"]["score"] == 1
 
 
 def test_assessor_retry_success_is_used(tmp_db, monkeypatch):
     replies = ["nope", _assess_reply()]
     calls = []
 
-    def chat(messages):
+    def chat(messages, timeout=None):
         calls.append(messages)
         return replies[len(calls) - 1]
 
@@ -649,3 +669,93 @@ def test_assessor_retry_success_is_used(tmp_db, monkeypatch):
     assert len(calls) == 2
     assert helped["step"] == "question"
     assert helped["assessment"]["score"] == 1
+
+
+# --- Assess-first flow ----------------------------------------------------------
+def test_fallback_assessment_passes_verifier_every_module():
+    tries = {
+        "topic-sentences": "Evaporation dries clothes on windy days here.",
+        "thesis-statements": "Hostels should allow late study hours daily.",
+        "developing-paragraphs": ("Rain fills the wells. Crops drink deeply. "
+                                  "The village eats well all year."),
+        "coherence-flow": "It rained hard, but the match went on.",
+        "using-sources": "According to Rao, trees cool the hot streets.",
+        "genre": "The lab report shows clean tubes and readings.",
+        "mechanics": "neem trees cool our home daily.",
+        "referencing-styles": "Rao says trees cool streets daily.",
+        "academic-vocabulary": "Trees are nice and good daily.",
+    }
+    for module_id, text in tries.items():
+        fields = main._assess_fallback(module_id, "Sciences", text)
+        assert fields["score"] in (1, 2), module_id
+        assert fields["quote"] in text, module_id
+        assert main.verify("assessor", {
+            "status": "ok", "feedback": main._assessment_feedback(fields),
+            "attempt": text, "quote": fields["quote"],
+            "score": fields["score"]})["pass"], module_id
+
+
+def test_assessment_card_has_model_and_starter(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    got = _help(learner_id, attempt,
+                "Plants need sun to grow tall daily.")["assessment"]
+    assert got["strength"] and "plants need sun" in got["strength"].lower()
+    assert got["problem"] and got["quote"] in \
+        "Plants need sun to grow tall daily."
+    assert got["model"] == main.worked_model("topic-sentences", "Sciences")
+    assert "evaporation" not in got["model"].lower()  # different topic
+    assert "Your turn" in got["your_turn"] and "____" in got["your_turn"]
+
+
+def test_excerpt_serves_one_labelled_sentence(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=3: _hit())
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    _help(learner_id, attempt, "Plants need sun.")  # assessed first
+    shown = main.post_scaffold_show(main.ScaffoldShowIn(
+        learner_id=learner_id, attempt_id=attempt))
+    assert shown["excerpt"]["text"] == "First."
+    assert shown["excerpt"]["label"] == "Good example"
+    assert shown["self_explanation"] == "Why does this work?"
+    assert shown["try"] == "Plants need sun."
+
+
+def test_weak_excerpt_asks_what_is_missing(tmp_db, monkeypatch):
+    weak = (["It is very nice and interesting today."],
+            [{"source": "guide.pdf", "chapter": "Ch 1", "license": "CC BY"}])
+    monkeypatch.setattr(main, "_query_guides",
+                        lambda query, n_results=3: weak)
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    shown = main.post_scaffold_show(main.ScaffoldShowIn(
+        learner_id=learner_id, attempt_id=attempt))
+    assert shown["excerpt"]["label"] == "Weak example"
+    assert shown["self_explanation"] == "What is missing here?"
+
+
+def test_rewrite_compares_with_first_try(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: None)
+    learner_id = _learner(tmp_db)
+    attempt = _start(learner_id)["attempt_id"]
+    _help(learner_id, attempt, "Plants need sun.")
+    done = main.post_scaffold_rewrite(main.ScaffoldRewriteIn(
+        learner_id=learner_id, attempt_id=attempt,
+        text="Evaporation explains why clothes dry faster on windy days."))
+    assert done["step"] == "done"
+    assert "First try (score 1 of 2)" in done["comparison"]
+    assert "Rewrite (score 2 of 2)" in done["comparison"]
+    assert "moved up" in done["comparison"]
+
+
+def test_feedback_card_ui_strings():
+    task = (ROOT / "frontend" / "src" / "components" / "ScaffoldTask.jsx"
+            ).read_text(encoding="utf-8")
+    assert "Twin's feedback" in task
+    assert "Let me show you one" in task and "✏️" in task
+    assert "res.excerpt.label" in task and "Compare" in task
+    assert "Your sentence:" in task

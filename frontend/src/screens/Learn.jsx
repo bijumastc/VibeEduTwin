@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import LessonView from '../components/LessonView.jsx';
 
-// Learn: curriculum of 6 disciplines x 6 ordered modules. The learner's own
-// discipline opens by default; others are browsable. Modules unlock in order
-// by level; the current module is marked clearly.
+// Learn: curriculum of 6 disciplines x 9 ordered modules. The learner's own
+// discipline opens by default; others are browsable. All modules are open;
+// the weakest skill's module carries "Recommended for you".
 export default function Learn({ go }) {
   const [data, setData] = useState(null);
   const [discipline, setDiscipline] = useState('');
@@ -70,16 +70,12 @@ export default function Learn({ go }) {
         <div key={m.id}>
           <button
             className="btn secondary option-btn"
-            onClick={() => m.unlocked && openModule(m.id)}
-            disabled={!m.unlocked}
+            onClick={() => openModule(m.id)}
           >
             {m.title}
-            {m.current && <span className="focus-tag">current</span>}
+            {m.recommended && <span className="focus-tag">Recommended for you</span>}
             <span className="level-chip">Level {m.learner_level}</span>
           </button>
-          {!m.unlocked && (
-            <p className="muted">Locked · needs Level {m.required_level} in {m.skill}</p>
-          )}
         </div>
       ))}
     </div>

@@ -25,6 +25,17 @@ def test_home_first_requests_succeed_on_fresh_learner(tmp_db):
     assert levels["levels"] == {} and levels["leveled_up"] == []
 
 
+def test_home_begin_and_next_step_strings():
+    home = (ROOT / "frontend" / "src" / "screens" / "Home.jsx").read_text(
+        encoding="utf-8")
+    assert "Let's begin" in home.replace("&apos;", "'")
+    assert ("Write a short paragraph so your twin can understand how you "
+            "write") in home
+    assert "api.drafts()" in home
+    assert "Your next step" in home
+    assert "Your line:" in home
+
+
 def test_api_client_reports_target_and_real_errors():
     api = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
     assert "Cannot reach the backend at ${API_URL}" in api

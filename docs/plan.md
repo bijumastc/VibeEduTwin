@@ -200,6 +200,16 @@ the twin Verifier, which only accepts quotes from the chat message):
 > very big problem', does not say what this paragraph will prove. Try
 > starting like this: 'Plastic waste is harming ______ in ______.'
 
+Scripted Assessor response for this exact Topic sentences try (fixed
+script, no Spark, no verifier; any other try keeps the fixed ladder):
+"Freedom struggle ensured the peace and calm that we enjoy today".
+Score 1 of 2: "You named a topic and said what it achieved - that is
+the right shape." / "'the peace and calm that we enjoy today' is too
+broad for one paragraph to prove. Which struggle, and which result?
+Also start with 'The'." / model "Public libraries helped many village
+students prepare for college." / "Your turn: 'The Indian freedom
+struggle gave ordinary people ______.'"
+
 Practice set (Paragraphing, Level 1), served for every Paragraphing L1
 request in demo mode (it wins over published sets so recordings stay
 identical):

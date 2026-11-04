@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api.js';
+import ScanButton from './ScanButton.jsx';
 import VoiceButton from './VoiceButton.jsx';
 
 // Slide-over chat with the twin. Secondary helper, opened from Write/Practice.
@@ -57,6 +58,10 @@ export default function TwinPanel({ screen, onClose }) {
           <button onClick={() => send(input)} disabled={sending}>Send</button>
           <VoiceButton
             onTranscript={(spoken) => setInput((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+          />
+          <ScanButton
+            onTranscript={(scanned) => setInput((prev) => (prev ? `${prev} ${scanned}` : scanned))}
+            onError={(msg) => setMessages((m) => [...m, { from: 'twin', text: msg }])}
           />
         </div>
         <p className="twin-lang-hint">You can type in Malayalam or Manglish.</p>

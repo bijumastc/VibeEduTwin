@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import BasedOn from './BasedOn.jsx';
+import ScanButton from './ScanButton.jsx';
+import VoiceButton from './VoiceButton.jsx';
 
 // ScaffoldTask: the productive-struggle ladder for one module task.
 // (a) try with no help -> (b) guiding question -> (c) hint ->
@@ -25,10 +27,9 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
     setView(res);
     if (res.assessment) {
       push({
-        kind: 'twin',
+        kind: 'assess',
         label: "Twin's feedback",
-        text: res.assessment.feedback,
-        cite: `Score ${res.assessment.score} of 2`,
+        a: res.assessment,
       });
     }
     if (res.question) push({ kind: 'twin', label: 'Guiding question', text: res.question });
@@ -36,11 +37,13 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
     if (res.excerpt) {
       push({
         kind: 'twin',
-        label: 'From the books',
+        label: res.excerpt.label || 'From the books',
         text: res.excerpt.text,
         books: res.excerpt.book ? [res.excerpt.book] : [],
+        cite: res.try ? `Your sentence: “${res.try}”` : null,
       });
     }
+    if (res.comparison) push({ kind: 'twin', label: 'Compare', text: res.comparison });
     if (res.rule && res.rule.source) {
       push({
         kind: 'twin',
@@ -99,6 +102,7 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
   return (
     <div>
       <h2>{moduleTitle}</h2>
+      {busy && <p className="loading">Your twin is reading your writing...</p>}
       <div className="card tint">
         <div className="card-title">Your task</div>
         <p>{view.task}</p>
@@ -107,6 +111,20 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
       {feed.map((e, i) => (
         e.kind === 'me'
           ? <div className="card" key={i}><p>{e.text}</p></div>
+          : e.kind === 'assess'
+            ? (
+              <div className="card" key={i}>
+                <div className="card-title">{e.label}</div>
+                {e.a.strength && <p>{e.a.strength}</p>}
+                {e.a.problem && <p>{e.a.problem}</p>}
+                {!e.a.strength && !e.a.problem && <p>{e.a.feedback}</p>}
+                {e.a.status === 'ok' && e.a.model && (
+                  <p><strong>✏️ Let me show you one:</strong> {e.a.model}</p>
+                )}
+                {e.a.status === 'ok' && e.a.your_turn && <p>{e.a.your_turn}</p>}
+                <p className="muted"><em>Score {e.a.score} of 2</em></p>
+              </div>
+            )
           : e.kind === 'steps'
               ? (
                 <div className="card" key={i}>
@@ -140,6 +158,16 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
+          <VoiceButton
+            disabled={busy}
+            onTranscript={(spoken) => setDraft((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+          />{' '}
+          <ScanButton
+            disabled={busy}
+            onTranscript={(scanned) => setDraft((prev) => (prev ? `${prev} ${scanned}` : scanned))}
+            onError={setError}
+          />
+          <div style={{ height: 10 }} />
           <button className="btn" onClick={help} disabled={busy}>
             {step === 'try' ? 'I tried — help me' : 'Still stuck — help me'}
           </button>
@@ -165,6 +193,16 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
+          <VoiceButton
+            disabled={busy}
+            onTranscript={(spoken) => setDraft((prev) => (prev ? `${prev} ${spoken}` : spoken))}
+          />{' '}
+          <ScanButton
+            disabled={busy}
+            onTranscript={(scanned) => setDraft((prev) => (prev ? `${prev} ${scanned}` : scanned))}
+            onError={setError}
+          />
+          <div style={{ height: 10 }} />
           <button className="btn" onClick={rewrite} disabled={busy || !draft.trim()}>
             Submit rewrite
           </button>

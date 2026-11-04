@@ -219,7 +219,7 @@ def _feedback_reply(text):
 
 def _routed_chat(calls, diagnose_replies, text):
     """Fake Spark: diagnose prompts get diagnose replies, feedback gets one."""
-    def fake_chat(messages, temperature=None):
+    def fake_chat(messages, temperature=None, timeout=None):
         calls.append((messages, temperature))
         if "give feedback" in messages[0]["content"]:
             return _feedback_reply(text)
@@ -280,7 +280,7 @@ def test_diagnosis_rejects_bad_evidence_and_retries(tmp_db, monkeypatch):
 def test_diagnosis_exhausts_retries_then_heuristic(tmp_db, monkeypatch):
     calls = []
 
-    def bad_chat(messages, temperature=None):
+    def bad_chat(messages, temperature=None, timeout=None):
         calls.append(messages)
         return "nope"
 
@@ -318,7 +318,7 @@ def test_sanity_gap_logged_when_spark_differs(tmp_db, monkeypatch):
     levels = dict(heur)
     levels["Argument"] = 5  # 3 levels above the heuristic
 
-    def fake_chat(messages, temperature=None):
+    def fake_chat(messages, temperature=None, timeout=None):
         return _diagnose_reply(levels, "Nice good")
 
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
@@ -350,7 +350,7 @@ def test_validate_diagnosis_rejects_bad_shapes():
     assert main._validate_diagnosis(missing, text) is None
 
 
-def test_diagnose_sends_temperature_zero_with_short_timeout(tmp_db, monkeypatch):
+def test_diagnose_sends_temperature_zero_with_slow_timeout(tmp_db, monkeypatch):
     seen = {}
 
     def fake_post(url, body, key, timeout):
@@ -364,6 +364,6 @@ def test_diagnose_sends_temperature_zero_with_short_timeout(tmp_db, monkeypatch)
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id,
                                              content="Nice good."))
     assert seen["body"]["temperature"] == 0
-    assert seen["timeout"] == main.SPARK_TIMEOUT <= 20
+    assert seen["timeout"] == main.SPARK_TIMEOUT_SLOW == 40
     assert res["scores"]["Grammar"] == 50
     assert res["weakest"] == "Grammar"  # tie: first skill wins

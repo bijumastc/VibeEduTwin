@@ -119,7 +119,7 @@ def test_spark_feedback_serves_one_model_rewrite(tmp_db, monkeypatch):
     text = EXAMPLE
     calls = []
 
-    def fake_chat(messages, temperature=None):
+    def fake_chat(messages, temperature=None, timeout=None):
         calls.append(messages)
         if "give feedback" in messages[0]["content"]:
             return _feedback_ok(text)
@@ -152,7 +152,7 @@ def test_bad_feedback_retries_then_template(tmp_db, monkeypatch):
          "fix": "z"}]})
     calls = []
 
-    def fake_chat(messages, temperature=None):
+    def fake_chat(messages, temperature=None, timeout=None):
         calls.append(messages)
         if "give feedback" in messages[0]["content"]:
             return bad
@@ -277,6 +277,35 @@ def test_learn_card_read_more_and_connect():
     assert "connect" in lesson
     write = _src("screens", "Write.jsx")
     assert "connect={result.learn.connect}" in write
+
+
+def test_feedback_uses_slow_timeout(tmp_db, monkeypatch):
+    seen = []
+
+    def fake_post(url, body, key, timeout):
+        seen.append(timeout)
+        if "give feedback" in body["messages"][0]["content"]:
+            content = _feedback_ok(EXAMPLE)
+        else:
+            content = _diagnose_ok({}, "I like plants.")
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_post", fake_post)
+    learner_id = _learner(tmp_db)
+    res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id,
+                                             content=EXAMPLE))
+    assert seen == [main.SPARK_TIMEOUT_SLOW, main.SPARK_TIMEOUT_SLOW] == [40, 40]
+    assert res["feedback"]["model"]["before"] in EXAMPLE
+
+
+def test_twin_reading_line_on_write_and_scaffold():
+    write = _src("screens", "Write.jsx")
+    task = _src("components", "ScaffoldTask.jsx")
+    practice = _src("screens", "Practice.jsx")
+    assert "Your twin is reading your writing..." in write
+    assert "Your twin is reading your writing..." in task
+    assert "Your twin is reading your writing..." not in practice
 
 
 def test_write_shows_fallback_notice():

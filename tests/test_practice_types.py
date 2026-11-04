@@ -122,7 +122,11 @@ def test_review_set_mixes_earlier_modules(tmp_db, monkeypatch):
     assert len(review["items"]) == 6
     modules = {it.get("module") for it in review["items"]
                if it.get("kind") == "recognise"}
-    assert modules == {"topic-sentences", "thesis-statements"}
+    # Weakest skill is Grammar (unscored): review mixes the three modules
+    # before the recommended mechanics module.
+    assert modules <= {"developing-paragraphs", "coherence-flow",
+                       "using-sources"}
+    assert len(modules) >= 2
 
 
 def test_teacher_sets_assessed_here(tmp_db, monkeypatch):

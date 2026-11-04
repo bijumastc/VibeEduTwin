@@ -107,7 +107,7 @@ def test_demo_other_text_uses_live_spark(demo_on, monkeypatch):
     text = "My favourite festival is Onam. People wear new clothes."
     seen = []
 
-    def fake_chat(messages, temperature=None):
+    def fake_chat(messages, temperature=None, timeout=None):
         seen.append(messages)
         if "give feedback" in messages[0]["content"]:
             return json.dumps({
@@ -299,6 +299,28 @@ def test_demo_scaffold_assessor_stays_on_fixed_ladder(demo_on, monkeypatch):
         attempt_text="Plants need sun to grow tall."))
     assert helped["step"] == "hint"  # L1 fixed ladder
     assert "assessment" not in helped
+
+
+def test_demo_scripts_assessor_for_exact_try(demo_on, monkeypatch):
+    def boom(messages, temperature=None, timeout=None):
+        raise AssertionError("demo script must not call Spark")
+
+    monkeypatch.setattr(main, "_spark_chat", boom)
+    learner_id = _learner(demo_on)
+    started = main.post_scaffold_start(main.ScaffoldStartIn(
+        learner_id=learner_id, discipline="Sciences",
+        module="topic-sentences"))
+    helped = main.post_scaffold_help(main.ScaffoldHelpIn(
+        learner_id=learner_id, attempt_id=started["attempt_id"],
+        attempt_text=main.DEMO_ASSESS_ATTEMPT))
+    got = helped["assessment"]
+    assert got["status"] == "ok" and got["score"] == 1
+    assert got["strength"] == main.DEMO_ASSESSMENT_STRENGTH
+    assert got["problem"] == main.DEMO_ASSESSMENT_PROBLEM
+    assert got["quote"] in main.DEMO_ASSESS_ATTEMPT
+    assert got["model"] == main.DEMO_ASSESSMENT_MODEL
+    assert got["your_turn"] == main.DEMO_ASSESSMENT_YOUR_TURN
+    assert helped["step"] == "question"
 
 
 def test_demo_teacher_studio_still_uses_spark(demo_on, monkeypatch):

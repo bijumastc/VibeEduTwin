@@ -1192,9 +1192,9 @@ def learn_card(skill: str, level: int, discipline: str) -> dict:
 
 
 # --- Curriculum ---------------------------------------------------------------
-# Six disciplines, six ordered modules each. The first five modules are shared;
-# the sixth teaches the discipline's genre (Medicine: writing about case
-# reports only - never health advice).
+# Six disciplines, nine ordered modules each. The first eight modules are
+# shared; the ninth teaches the discipline's genre (Medicine: writing about
+# case reports only - never health advice).
 DISCIPLINE_GENRES = {
     "Sciences": "lab report",
     "Technology": "technical report",
@@ -1215,11 +1215,20 @@ CURRICULUM_MODULES = [
      "skill": "Sentence structure", "required_level": 3, "query": "coherence and flow"},
     {"id": "using-sources", "title": "Using sources",
      "skill": "Using sources", "required_level": 3, "query": "using sources citations"},
+    {"id": "mechanics", "title": "Mechanics",
+     "skill": "Grammar", "required_level": 1,
+     "query": "mechanics punctuation capitals spelling"},
+    {"id": "referencing-styles", "title": "Referencing styles",
+     "skill": "Using sources", "required_level": 3,
+     "query": "referencing styles APA MLA citations"},
+    {"id": "academic-vocabulary", "title": "Academic vocabulary",
+     "skill": "Vocabulary", "required_level": 2,
+     "query": "academic vocabulary formal words linking"},
 ]
 
 
 def genre_module(discipline: str) -> dict:
-    """The sixth module: writing the discipline's genre."""
+    """The ninth module: writing the discipline's genre."""
     genre = DISCIPLINE_GENRES[discipline]
     return {"id": "genre", "title": (genre + "s").capitalize(),
             "skill": "Academic tone", "required_level": 3,
@@ -1227,29 +1236,24 @@ def genre_module(discipline: str) -> dict:
 
 
 def discipline_modules(discipline: str) -> list[dict]:
-    """All six modules for a discipline, in unlock order."""
+    """All nine modules for a discipline, in order."""
     return [*CURRICULUM_MODULES, genre_module(discipline)]
 
 
 def module_states(discipline: str, scores: dict[str, float]) -> list[dict]:
-    """Module list with unlock state; the highest unlocked module is current.
-
-    Modules unlock in order: a module opens when every earlier module is open
-    and the learner's level in the module's skill meets required_level.
-    """
+    """All modules open; the first module of the weakest skill is recommended."""
+    weak, _ = weakest_skill(scores)
     states = []
-    prev_open = True
     for module in discipline_modules(discipline):
         level = level_for_score(scores.get(module["skill"], 0))
-        unlocked = prev_open and level >= module["required_level"]
         states.append({"id": module["id"], "title": module["title"],
                        "skill": module["skill"],
                        "required_level": module["required_level"],
-                       "learner_level": level, "unlocked": unlocked,
-                       "current": False})
-        prev_open = unlocked
-    for state in reversed(states):
-        if state["unlocked"]:
+                       "learner_level": level, "unlocked": True,
+                       "current": False, "recommended": False})
+    for state in states:
+        if state["skill"] == weak:
+            state["recommended"] = True
             state["current"] = True
             break
     return states
@@ -1277,6 +1281,9 @@ LESSON_HOOKS = {
     "developing-paragraphs": "One strong line about {topic} stands alone on a page. Is it enough to convince you?",
     "coherence-flow": "Two true lines about {topic} sit side by side, yet the reader is lost. What is missing between them?",
     "using-sources": "You read a striking claim about {topic} with no source named. Do you trust it?",
+    "mechanics": "Your {genre} is strong, but each line starts with a small letter. Will the reader trust it?",
+    "referencing-styles": "Two writers make the same point about {topic}. One names a source. Whose line do you trust?",
+    "academic-vocabulary": "Your line about {topic} says 'nice' three times. What does the reader actually learn?",
     "genre": "Your {genre} about {topic} lands on a busy reader's desk. What must they see first?",
 }
 
@@ -1306,6 +1313,21 @@ LESSON_TRY = {
         "options": ["The source name", "Bigger words", "More ideas"],
         "answer": 0,
         "reveal": "Name the source, then use your own words."},
+    "mechanics": {
+        "prompt": "A line about {topic} has no capital letter and no full stop. What must you fix first?",
+        "options": ["The capitals and stops", "The topic", "The length"],
+        "answer": 0,
+        "reveal": "Capitals and stops come first. Then the words."},
+    "referencing-styles": {
+        "prompt": "You use an idea about {topic} from a book. What must your line carry?",
+        "options": ["The author and year", "A long quote", "A new topic"],
+        "answer": 0,
+        "reveal": "Author and year point to the source."},
+    "academic-vocabulary": {
+        "prompt": "Your line about {topic} repeats easy words. What should you do?",
+        "options": ["Pick exact words", "Add more lines", "Shorten each word"],
+        "answer": 0,
+        "reveal": "Exact words carry exact meaning."},
     "genre": {
         "prompt": "You open {art} {genre} about {topic}. What should the first lines give?",
         "options": ["The key facts", "A long greeting", "A joke"],
@@ -1319,6 +1341,9 @@ LESSON_IDEAS = {
     "developing-paragraphs": "One paragraph makes one point. Each line adds proof or detail. Cut lines that wander off.",
     "coherence-flow": "Flow means the reader moves smoothly from line to line. Strong ideas in clear order make flow. Linkers show the links.",
     "using-sources": "Name the source each time you borrow. Citations point to the author. Your own words carry your voice.",
+    "mechanics": "Capitals open each sentence. Stops close them. Articles point at the right noun.",
+    "referencing-styles": "Name the author in your line. Add the year in brackets. List full details at the end.",
+    "academic-vocabulary": "Formal words suit college writing. Exact verbs beat vague ones. Linkers join your ideas.",
     "genre": "{Art} {genre} reports facts in order. It opens with what matters most. Short parts keep it easy to scan.",
 }
 
@@ -1347,6 +1372,18 @@ LESSON_IDEA_CLAIMS = {
         {"label": "name source", "keywords": ["source", "cite", "citation"]},
         {"label": "point to author", "keywords": ["author", "credit", "attribut", "writer"]},
         {"label": "own words", "keywords": ["own", "voice", "paraphras", "word", "paper"]}],
+    "mechanics": [
+        {"label": "capitals", "keywords": ["capital"]},
+        {"label": "stops", "keywords": ["stop", "period", "punctuat"]},
+        {"label": "articles", "keywords": ["article", "noun"]}],
+    "referencing-styles": [
+        {"label": "author", "keywords": ["author"]},
+        {"label": "year", "keywords": ["year", "date"]},
+        {"label": "reference list", "keywords": ["reference", "list", "bibliograph"]}],
+    "academic-vocabulary": [
+        {"label": "formal words", "keywords": ["formal", "academic", "word"]},
+        {"label": "exact verbs", "keywords": ["exact", "verb", "precise", "vague"]},
+        {"label": "linkers", "keywords": ["link", "transition", "connect", "cohesi"]}],
     "genre": [
         {"label": "reports facts", "keywords": ["report", "essay", "paper", "document", "account"]},
         {"label": "opens first", "keywords": ["first", "open", "begin", "introduction", "lead"]},
@@ -1359,6 +1396,9 @@ LESSON_WHY = {
     "developing-paragraphs": "You will prove each line before you move on. Start by checking that one line proves the first.",
     "coherence-flow": "You will link every line to the next. Start by adding one linking word.",
     "using-sources": "You will name each source you use. Start by adding one name.",
+    "mechanics": "You will write clean lines every time. Start by fixing one capital letter.",
+    "referencing-styles": "You will credit every source you use. Start by adding one author and year.",
+    "academic-vocabulary": "You will pick exact words with ease. Start by swapping one vague word.",
     "genre": "You will follow the {genre} shape each time. Start by writing one part in its order.",
 }
 
@@ -1452,6 +1492,9 @@ SCAFFOLD_TASKS = {
     "developing-paragraphs": "Write three sentences that develop this idea: {topic}.",
     "coherence-flow": "Write two sentences about {topic}. Join them with because, but, or so.",
     "using-sources": "Write one sentence about {topic} that names its source with 'According to'.",
+    "mechanics": "Write one sentence about {topic} with correct capitals, spelling, and a full stop.",
+    "referencing-styles": "Write one sentence about {topic} with an in-text citation: author and year in brackets.",
+    "academic-vocabulary": "Write one sentence about {topic} using one formal word and one linking word.",
     "genre": "Write one {genre} sentence about {topic}.",
 }
 
@@ -1466,6 +1509,12 @@ SCAFFOLD_QUESTIONS = {
                        "Which linker joins them best: because, but, or so?"],
     "using-sources": ["Whose idea are you using?",
                       "Where did you read it?"],
+    "mechanics": ["Which word needs a capital letter?",
+                  "Where does the full stop go?"],
+    "referencing-styles": ["Whose idea are you borrowing?",
+                           "Where do the author and year go?"],
+    "academic-vocabulary": ["Which word is vague in your line?",
+                            "Which linker joins your ideas?"],
     "genre": ["Who will read this {genre}?",
               "What fact must your first line give?"],
 }
@@ -1517,6 +1566,24 @@ def targeted_hint(module_id: str, attempt_text: str, topic: str) -> str:
         if "according to" not in lowered:
             return "Start with 'According to ...' and name your source."
         return "Now put the rest in your own words."
+    if module_id == "mechanics":
+        if text and not text[0].isupper():
+            return "Start with a capital letter."
+        if not re.search(r"[.!?]$", text):
+            return "Close your line with a full stop."
+        return "Check each word's spelling, then each a, an, and the."
+    if module_id == "referencing-styles":
+        if "(" not in text or not re.search(r"\d{4}", text):
+            return "Add the author and year in brackets."
+        return "Now list the full source at the end."
+    if module_id == "academic-vocabulary":
+        if any(w in lowered for w in ("nice", "very", "good", "bad", "big",
+                                      "small", "things", "stuff")):
+            return "Swap one vague word for an exact one."
+        if not any(w in lowered for w in ("however", "therefore", "because",
+                                          "but", "also", "for example")):
+            return "Add one linker: however, therefore, or for example."
+        return "Read it aloud. Does it sound formal?"
     if _attempt_sentences(text) < 1 or len(text.split()) < 5:
         return "Write one full sentence of five or more words."
     return "Use calm, exact words. No 'very' or 'really'."
@@ -1554,6 +1621,21 @@ WORKED_STEPS = {
         "Next, fix the exact point you borrow.",
         "Then write that point in your own words.",
         "Finally, check the source is named, then study the model."],
+    "mechanics": [
+        "First, write one line about {topic}.",
+        "Next, fix the capital letter and the full stop.",
+        "Then check each word's spelling and each article.",
+        "Finally, check the line once more, then study the model."],
+    "referencing-styles": [
+        "First, name whose idea about {topic} you borrow.",
+        "Next, add the author and year in brackets.",
+        "Then write the point in your own words.",
+        "Finally, check the citation is there, then study the model."],
+    "academic-vocabulary": [
+        "First, write one plain line about {topic}.",
+        "Next, swap one vague word for an exact one.",
+        "Then add one linker to join your ideas.",
+        "Finally, check it sounds formal, then study the model."],
     "genre": [
         "First, name your reader and your {genre} topic: {topic}.",
         "Next, ask: which fact does your reader need first?",
@@ -1686,6 +1768,50 @@ WORKED_MODELS = {
     ("genre", "Social Sciences"):
         "This {genre} opens with bus counts, which show why youth leave "
         "farms.",
+    ("mechanics", "Sciences"):
+        "Neem trees explain why village homes stay cool in summer.",
+    ("mechanics", "Technology"):
+        "Bus tickets show why paper tokens still beat phone apps in towns.",
+    ("mechanics", "Medicine"):
+        "Boiled water proves why clean habits stop stomach pain.",
+    ("mechanics", "Arts & Humanities"):
+        "Street plays show why busy markets turn into open theatres.",
+    ("mechanics", "Commerce & Management"):
+        "Tea stalls explain why small shops earn trust before profit.",
+    ("mechanics", "Social Sciences"):
+        "City jobs explain why young workers leave their farms.",
+    ("referencing-styles", "Sciences"):
+        "According to our textbook, neem trees explain why homes stay cool.",
+    ("referencing-styles", "Technology"):
+        "According to the manual, bus tickets show why paper tokens work.",
+    ("referencing-styles", "Medicine"):
+        "According to the health worker, boiled water proves why clean "
+        "habits matter.",
+    ("referencing-styles", "Arts & Humanities"):
+        "According to our teacher, street plays show why markets turn "
+        "lively.",
+    ("referencing-styles", "Commerce & Management"):
+        "According to the shop owner, tea stalls explain why trust earns "
+        "profit.",
+    ("referencing-styles", "Social Sciences"):
+        "According to the survey report, city jobs explain why workers "
+        "migrate.",
+    ("academic-vocabulary", "Sciences"):
+        "Because neem trees reduce indoor heat, villagers plant them near "
+        "homes.",
+    ("academic-vocabulary", "Technology"):
+        "Paper tickets remain reliable because phone networks often fail "
+        "in small towns.",
+    ("academic-vocabulary", "Medicine"):
+        "Boiled water prevents illness because heat kills most germs.",
+    ("academic-vocabulary", "Arts & Humanities"):
+        "Street plays should get more public grounds because crowds learn "
+        "fast from them.",
+    ("academic-vocabulary", "Commerce & Management"):
+        "Small shops should keep daily accounts because clear records "
+        "build trust.",
+    ("academic-vocabulary", "Social Sciences"):
+        "Young workers migrate because city jobs pay regular wages.",
 }
 
 
@@ -1718,6 +1844,15 @@ SCAFFOLD_RUBRICS = {
     "using-sources": ["Names the source with According to.",
                       "Puts the borrowed point in own words.",
                       "Is one complete sentence."],
+    "mechanics": ["Starts with a capital letter.",
+                  "Ends with a full stop.",
+                  "Spelling and articles are correct."],
+    "referencing-styles": ["Names the author in the line.",
+                           "Adds the year in brackets.",
+                           "Puts the point in own words."],
+    "academic-vocabulary": ["Uses one formal, exact word.",
+                            "Joins ideas with a linker.",
+                            "Is one complete sentence."],
     "genre": ["Opens with the fact readers need first.",
               "Uses calm, exact words.",
               "Fits the {genre} shape."],
@@ -1840,7 +1975,8 @@ def _assess_with_spark(learner_id: int, module_id: str, discipline: str,
     for _ in range(1 + SPARK_MAX_REGENS):
         try:
             raw = _spark_chat(_assessor_messages(
-                module_id, discipline, attempt, text))
+                module_id, discipline, attempt, text),
+                timeout=SPARK_TIMEOUT_SLOW)
         except SparkError:
             continue
         fields = _parse_assessment(raw)
@@ -1858,8 +1994,109 @@ def _assess_with_spark(learner_id: int, module_id: str, discipline: str,
     return None
 
 
+# Deterministic assessor fallback: every try is judged, even with no key.
+ASSESS_FALLBACK_PROBLEM = {
+    "topic-sentences": "It has no clear controlling idea yet, so a reader "
+                       "cannot tell what the paragraph will prove.",
+    "thesis-statements": "It states no clear side with a reason, so a reader "
+                         "cannot tell what you will argue.",
+    "developing-paragraphs": "The lines do not all prove one idea yet, so "
+                             "the point feels loose.",
+    "coherence-flow": "The two parts are not joined yet, so the reader "
+                      "trips between them.",
+    "using-sources": "No source is named yet, so a reader cannot trust "
+                     "the point.",
+    "genre": "The opening does not lead with the key fact yet, so a "
+             "reader must hunt for it.",
+    "mechanics": "Small slips in capitals or stops remain, so the line "
+                 "looks careless.",
+    "referencing-styles": "The author or year is missing, so the source "
+                          "stays hidden.",
+    "academic-vocabulary": "Easy words repeat, so the point sounds weak.",
+}
+ASSESS_FALLBACK_ACTION = {
+    "topic-sentences": "Say what exactly about the topic in the same line.",
+    "thesis-statements": "Add your side and one reason in one line.",
+    "developing-paragraphs": "Make every line prove your first line.",
+    "coherence-flow": "Join the two parts with because, but, or so.",
+    "using-sources": "Start with According to and name the source.",
+    "genre": "Open with the one fact readers need first.",
+    "mechanics": "Fix one capital letter and one full stop.",
+    "referencing-styles": "Add the author and year in brackets.",
+    "academic-vocabulary": "Swap one vague word for an exact one.",
+}
+ASSESS_STARTERS = {
+    "topic-sentences": "{topic} explains why ____.",
+    "thesis-statements": "____ should ____ because ____.",
+    "developing-paragraphs": "For example, ____.",
+    "coherence-flow": "____, but ____.",
+    "using-sources": "According to ____, ____.",
+    "genre": "The key fact is ____.",
+    "mechanics": "{topic} ____.",
+    "referencing-styles": "According to ____ (__), ____.",
+    "academic-vocabulary": "____. However, ____.",
+}
+ASSESS_TRY_QUESTIONS = {
+    "topic-sentences": "what exactly will you say about it?",
+    "thesis-statements": "what reason proves your view?",
+    "developing-paragraphs": "which line proves your main idea?",
+    "coherence-flow": "which linker joins your two parts best?",
+    "using-sources": "whose idea is it, and where did you read it?",
+    "genre": "what is the key fact a reader needs first?",
+    "mechanics": "which letter needs a capital in your line?",
+    "referencing-styles": "where do the author and year go in your line?",
+    "academic-vocabulary": "which word is vague in your line?",
+}
+_CLAIM_VERBS = ("explain", "explains", "show", "shows", "should", "because",
+                "why", "prove", "proves", "mean", "means", "make", "makes",
+                "lead", "leads", "ensure", "ensures", "cause", "causes")
+
+
+def _assess_fallback(module_id: str, discipline: str, text: str) -> dict:
+    """Deterministic verdict: real-try strength, module problem, 1 or 2."""
+    lowered = text.lower()
+    if module_id == "developing-paragraphs":
+        strong = _attempt_sentences(text) >= 3 and len(text.split()) >= 20
+    elif module_id == "coherence-flow":
+        strong = _attempt_sentences(text) >= 2 and any(
+            w in lowered for w in ("because", "but", "so", "when", "while"))
+    else:
+        strong = (_attempt_sentences(text) == 1
+                  and len(text.split()) >= 8
+                  and any(v in lowered for v in _CLAIM_VERBS))
+    words = text.split()
+    quote = text.strip() if len(words) <= 10 else " ".join(words[:6])
+    return {"status": "ok", "score": 2 if strong else 1,
+            "next_step": "question",
+            "strength": f"Your line starts well: '{quote}'.",
+            "problem": "" if strong else ASSESS_FALLBACK_PROBLEM[module_id],
+            "quote": quote,
+            "next_action": ASSESS_FALLBACK_ACTION[module_id]}
+
+
+def _demo_assessment(learner_id: int, attempt: dict) -> dict:
+    """Fixed score-1 card for the scripted demo try (bump + log included)."""
+    quote = "the peace and calm that we enjoy today"
+    attempt["weak"] = attempt.get("weak", 0) + 1
+    skill = attempt["skill"]
+    current = latest_scores(learner_id).get(skill, 0)
+    new_score = min(100, current + ASSESS_BUMPS[1])
+    store.save_skill_scores(learner_id, {skill: new_score})
+    store.log_event(learner_id, "Scaffold", "twin", "assess",
+                    "score=1/2 status=ok (demo script)")
+    return {"status": "ok",
+            "feedback": f"{DEMO_ASSESSMENT_STRENGTH} {DEMO_ASSESSMENT_PROBLEM}",
+            "strength": DEMO_ASSESSMENT_STRENGTH,
+            "problem": DEMO_ASSESSMENT_PROBLEM, "quote": quote, "score": 1,
+            "next_step": "question", "skill": skill,
+            "skill_score": new_score,
+            "skill_level": level_for_score(new_score),
+            "model": DEMO_ASSESSMENT_MODEL,
+            "your_turn": DEMO_ASSESSMENT_YOUR_TURN}
+
+
 def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
-    """Assess one try: gates, Spark, verify, score. None means skip it."""
+    """Assess one try: gates, Spark, fallback, verify, score. None: demo only."""
     module_id, discipline = attempt["module"], attempt["discipline"]
     if len(text.split()) < 3:
         fields = {"status": "nonsense", "score": 0, "next_step": "retry",
@@ -1867,11 +2104,16 @@ def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
     elif _copied_pattern(module_id, discipline, attempt, text):
         fields = {"status": "copied", "score": 0, "next_step": "retry",
                   "strength": "", "problem": "", "quote": "", "next_action": ""}
+    elif _demo_mode():
+        if attempt["module"] == "topic-sentences" and _demo_text_match(
+                text, DEMO_ASSESS_ATTEMPT):
+            return _demo_assessment(learner_id, attempt)
+        return None  # demo keeps the fixed ladder
     else:
         fields = _assess_with_spark(
             learner_id, module_id, discipline, attempt, text)
         if fields is None:
-            return None
+            fields = _assess_fallback(module_id, discipline, text)
     feedback = _assessment_feedback(fields)
     verdict = verify("assessor", {"status": fields["status"], "feedback": feedback,
                                   "attempt": text, "quote": fields["quote"],
@@ -1890,11 +2132,17 @@ def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
         store.save_skill_scores(learner_id, {skill: new_score})
     store.log_event(learner_id, "Scaffold", "twin", "assess",
                     f"score={fields['score']}/2 status={fields['status']}")
+    starter = ASSESS_STARTERS[module_id].format(
+        topic=DISCIPLINE_TOPICS[discipline],
+        genre=DISCIPLINE_GENRES[discipline])
     return {"status": fields["status"], "feedback": feedback,
+            "strength": fields["strength"], "problem": fields["problem"],
             "quote": fields["quote"], "score": fields["score"],
             "next_step": fields["next_step"], "skill": skill,
             "skill_score": new_score,
-            "skill_level": level_for_score(new_score)}
+            "skill_level": level_for_score(new_score),
+            "model": worked_model(module_id, discipline),
+            "your_turn": f"Your turn: finish this starter: '{starter}'"}
 
 
 # --- Practice Assessor ----------------------------------------------------------
@@ -2410,7 +2658,8 @@ def _diagnose_with_spark(learner_id: int, text: str,
     messages = _diagnose_messages(text, discipline)
     for _ in range(1 + SPARK_MAX_REGENS):
         try:
-            data = json.loads(_spark_chat(messages, temperature=0))
+            data = json.loads(_spark_chat(messages, temperature=0,
+                                           timeout=SPARK_TIMEOUT_SLOW))
         except (SparkError, ValueError):
             continue
         fields = _validate_diagnosis(data, text)
@@ -2470,6 +2719,20 @@ DEMO_TWIN_RESPONSE = (
 DEMO_COMPARISON = (
     "In your last paragraph you had no clear topic sentence; this time "
     "your first sentence names the problem and the place.")
+
+# Scripted Learn-assessor verdict for one exact demo try (fixed script:
+# no Spark, no verifier). Any other demo try keeps the fixed ladder.
+DEMO_ASSESS_ATTEMPT = ("Freedom struggle ensured the peace and calm that "
+                       "we enjoy today")
+DEMO_ASSESSMENT_STRENGTH = ("You named a topic and said what it achieved - "
+                            "that is the right shape.")
+DEMO_ASSESSMENT_PROBLEM = ("'the peace and calm that we enjoy today' is too "
+                           "broad for one paragraph to prove. Which struggle, "
+                           "and which result? Also start with 'The'.")
+DEMO_ASSESSMENT_MODEL = ("Public libraries helped many village students "
+                         "prepare for college.")
+DEMO_ASSESSMENT_YOUR_TURN = ("Your turn: 'The Indian freedom struggle gave "
+                             "ordinary people ______.'")
 
 DEMO_PRACTICE_ITEMS = [
     {"id": "d1", "type": "mcq", "kind": "recognise",
@@ -2712,7 +2975,8 @@ def _feedback_with_spark(learner_id: int, text: str,
     messages = _feedback_messages(text, weakest_two)
     for _ in range(1 + SPARK_MAX_REGENS):
         try:
-            data = json.loads(_spark_chat(messages, temperature=0))
+            data = json.loads(_spark_chat(messages, temperature=0,
+                                           timeout=SPARK_TIMEOUT_SLOW))
         except (SparkError, ValueError):
             continue
         fields = _validate_feedback_shape(data)
@@ -3725,6 +3989,9 @@ def _teacher_mcq_item(num: int, correct: str, distractors: list[str],
 SPARK_CHAT_URL = "https://api.meta.ai/v1/chat/completions"
 SPARK_MODEL = "muse-spark-1.3"
 SPARK_TIMEOUT = 20
+# Slower lane for the interactive writing loop only (Diagnoser, Write
+# feedback card, Learn Assessor): long JSON answers need more room.
+SPARK_TIMEOUT_SLOW = 40
 # Verifier retry budget, shared by every Spark path: 1 initial attempt plus
 # at most 2 regenerations, then the safe template or deterministic response.
 SPARK_MAX_REGENS = 2
@@ -3758,7 +4025,8 @@ def _spark_post(url: str, body: dict, key: str, timeout: int) -> dict:
 
 
 def _spark_chat(messages: list[dict],
-                temperature: float | None = None) -> str:
+                temperature: float | None = None,
+                timeout: int = SPARK_TIMEOUT) -> str:
     """One JSON-mode chat completion; assistant text, or raise SparkError."""
     key = _model_api_key()
     if not key:
@@ -3768,7 +4036,7 @@ def _spark_chat(messages: list[dict],
     if temperature is not None:
         body["temperature"] = temperature
     try:
-        data = _spark_post(SPARK_CHAT_URL, body, key, SPARK_TIMEOUT)
+        data = _spark_post(SPARK_CHAT_URL, body, key, timeout)
         return data["choices"][0]["message"]["content"]
     except SparkError:
         raise
@@ -4293,7 +4561,7 @@ def get_curriculum(learner_id: int):
 
 def _module_state_or_raise(learner_id: int, discipline: str,
                            module_id: str) -> tuple[dict, dict]:
-    """(unlock state, module content) for a learner, or raise 404/400/403."""
+    """(module state, module content) for a learner, or raise 404/400."""
     if store.get_learner(learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     if discipline not in DISCIPLINE_GENRES:
@@ -4303,14 +4571,7 @@ def _module_state_or_raise(learner_id: int, discipline: str,
         raise HTTPException(status_code=404, detail="Unknown module")
     states = {s["id"]: s for s in module_states(discipline, latest_scores(learner_id))}
     state = states[module_id]
-    if not state["unlocked"]:
-        if state["learner_level"] < state["required_level"]:
-            detail = (f"Reach Level {state['required_level']} in "
-                      f"{state['skill']} to unlock this module.")
-        else:
-            detail = "Unlock earlier modules first."
-        raise HTTPException(status_code=403, detail=detail)
-    return state, modules[module_id]
+    return state, modules[module_id]  # no locks: every module is open
 
 
 @app.get("/curriculum/modules")
@@ -4339,23 +4600,38 @@ def _scaffold_attempt_or_raise(learner_id: int, attempt_id: str) -> tuple[str, d
     return attempt_id, attempt
 
 
+_WEAK_EXAMPLE_SIGNS = ("very ", "many things", "interesting", "nice",
+                         "i will tell you", "there are", "a lot of")
+
+
 def _serve_excerpt(learner_id: int, attempt_id: str, attempt: dict,
                    tool: str) -> dict:
-    """Serve step (d): a real book excerpt with source. Never an answer."""
+    """Serve step (d): one clean book sentence, labelled Good/Weak example."""
     genre = DISCIPLINE_GENRES[attempt["discipline"]]
     modules = {m["id"]: m for m in discipline_modules(attempt["discipline"])}
-    excerpt = verified_excerpt(
+    found = verified_excerpt(
         module_example_query(modules[attempt["module"]], genre))
-    if excerpt.get("source"):
-        excerpt["book"] = resolve_book(excerpt["source"], excerpt.get("license"))
-        attempt["excerpt_text"] = excerpt["text"]
+    if found.get("source"):
+        sents = clean_sentences(found["text"])
+        one = sents[0] if sents else found["text"].strip()
+        weak = any(sign in one.lower() for sign in _WEAK_EXAMPLE_SIGNS)
+        excerpt = {"text": one, "source": found["source"],
+                   "chapter": found.get("chapter"),
+                   "license": found.get("license"),
+                   "book": resolve_book(found["source"],
+                                        found.get("license")),
+                   "label": "Weak example" if weak else "Good example"}
+        attempt["excerpt_text"] = one
     else:
-        excerpt["book"] = None
+        excerpt = {"text": NO_VERIFIED_EXAMPLE, "source": None,
+                   "chapter": None, "license": None, "book": None,
+                   "label": None}
         attempt["excerpt_text"] = ""
     attempt["step"] = "excerpt"
     store.log_event(learner_id, "Scaffold", "twin", tool,
                     f"attempt_id={attempt_id} module={attempt['module']}")
-    return _scaffold_view(attempt_id, attempt, {"excerpt": excerpt})
+    return _scaffold_view(attempt_id, attempt, {
+        "excerpt": excerpt, "try": attempt.get("last_try")})
 
 
 def _select_module_rule(module: dict, discipline: str) -> dict:
@@ -4398,6 +4674,8 @@ def _serve_scaffold_question(learner_id: int, attempt_id: str,
     genre = DISCIPLINE_GENRES[attempt["discipline"]]
     question = scaffold_question(
         attempt["module"], attempt["q_index"], genre)
+    if attempt.get("last_try"):
+        question = f"About your line '{attempt['last_try']}': {question}"
     attempt["q_index"] += 1
     attempt["step"] = "question"
     store.log_event(learner_id, "Scaffold", "twin", "question",
@@ -4410,6 +4688,8 @@ def _serve_scaffold_hint(learner_id: int, attempt_id: str, attempt: dict,
     """Serve ladder step (c): a hint aimed at the try's weak spot."""
     topic = DISCIPLINE_TOPICS[attempt["discipline"]]
     hint = targeted_hint(attempt["module"], attempt_text, topic)
+    if attempt.get("last_try"):
+        hint = f"About your line '{attempt['last_try']}': {hint}"
     attempt["step"] = "hint"
     store.log_event(learner_id, "Scaffold", "twin", "hint",
                     f"attempt_id={attempt_id} module={attempt['module']}")
@@ -4418,40 +4698,36 @@ def _serve_scaffold_hint(learner_id: int, attempt_id: str, attempt: dict,
 
 def _serve_assessed(learner_id: int, attempt_id: str, attempt: dict,
                     judged: dict, text: str) -> dict:
-    """Serve the assessed next step: good moves on, weak gets help, repeated
-    weak sees the excerpt. Levels 4-5 still get only questions."""
-    if judged["status"] != "ok":
-        next_step = "retry"
-    elif judged["score"] == 2:
-        next_step = "rewrite"
-    elif attempt.get("weak", 0) >= 2:
-        next_step = "excerpt"
-    elif judged["next_step"] in ("question", "hint", "excerpt", "retry"):
-        next_step = judged["next_step"]
-    else:
-        next_step = "question"
-    if attempt["level"] >= 4 and next_step in ("hint", "excerpt"):
-        next_step = "question"
-    judged["next_step"] = next_step
-    if next_step == "retry":
+    """Serve the assessed next step: 2 = praise + done, 1 = try-specific
+    question, 0 = retry, repeated weak = excerpt. Then the ladder runs."""
+    attempt["last_try"] = text
+    if "first_try" not in attempt:
+        attempt["first_try"] = text
+        attempt["first_score"] = judged["score"]
+    if judged["status"] != "ok" or judged["score"] == 0:
+        judged["next_step"] = "retry"
         return _scaffold_view(attempt_id, attempt, {"assessment": judged})
-    if next_step == "rewrite":
-        attempt["step"] = "rewrite"
+    if judged["score"] == 2:
+        judged["next_step"] = "done"
+        attempt["step"] = "done"
         return _scaffold_view(attempt_id, attempt, {
             "assessment": judged,
-            "prompt": "Good work. Now write your final version."})
-    if next_step == "excerpt":
+            "message": f"Well done. Your line '{judged['quote']}' does the "
+                       "job. Marked done."})
+    if attempt.get("weak", 0) >= 2 and attempt["level"] < 4:
+        judged["next_step"] = "excerpt"
         view = _serve_excerpt(learner_id, attempt_id, attempt, "excerpt")
         view["assessment"] = judged
         return view
-    if next_step == "hint":
-        view = _serve_scaffold_hint(
-            learner_id, attempt_id, attempt, text)
-        view["assessment"] = judged
-        return view
-    view = _serve_scaffold_question(learner_id, attempt_id, attempt)
-    view["assessment"] = judged
-    return view
+    judged["next_step"] = "question"
+    stem = ASSESS_TRY_QUESTIONS[attempt["module"]]
+    question = f"About your line '{judged['quote']}': {stem}"
+    attempt["q_index"] += 1
+    attempt["step"] = "question"
+    store.log_event(learner_id, "Scaffold", "twin", "question",
+                    f"attempt_id={attempt_id} module={attempt['module']}")
+    return _scaffold_view(attempt_id, attempt, {"assessment": judged,
+                                                "question": question})
 
 
 def _serve_steps(learner_id: int, attempt_id: str, attempt: dict,
@@ -4521,12 +4797,18 @@ def post_scaffold_help(data: ScaffoldHelpIn):
     level = attempt["level"]
     if attempt["step"] == "excerpt":
         attempt["step"] = "rewrite"
-        return _scaffold_view(attempt_id, attempt, {
-            "prompt": "Now rewrite using the pattern."})
+        prompt = "Now rewrite using the pattern."
+        if attempt.get("last_try"):
+            prompt = (f"Now rewrite your line '{attempt['last_try']}' "
+                      "using the pattern.")
+        return _scaffold_view(attempt_id, attempt, {"prompt": prompt})
     if attempt["step"] == "steps":
         attempt["step"] = "rewrite"
-        return _scaffold_view(attempt_id, attempt, {
-            "prompt": "Now write your version using the steps above."})
+        prompt = "Now write your version using the steps above."
+        if attempt.get("last_try"):
+            prompt = (f"Now rewrite your line '{attempt['last_try']}' "
+                      "using the steps above.")
+        return _scaffold_view(attempt_id, attempt, {"prompt": prompt})
     if attempt["step"] == "hint":
         return _serve_excerpt(data.learner_id, attempt_id, attempt, "excerpt")
     allowed = QUESTIONS_BEFORE_HINT.get(level)
@@ -4551,7 +4833,10 @@ def post_scaffold_show(data: ScaffoldShowIn):
     if attempt["shows"] >= 2 or attempt["step"] == "excerpt":
         return _serve_steps(data.learner_id, attempt_id, attempt, "show-me")
     view = _serve_excerpt(data.learner_id, attempt_id, attempt, "show-me")
-    view["self_explanation"] = SELF_EXPLANATION
+    if view["excerpt"]["label"] == "Weak example":
+        view["self_explanation"] = "What is missing here?"
+    elif view["excerpt"]["label"]:
+        view["self_explanation"] = "Why does this work?"
     return view
 
 
@@ -4572,15 +4857,30 @@ def post_scaffold_rewrite(data: ScaffoldRewriteIn):
         raise HTTPException(status_code=400, detail="Rewrite text is empty")
     attempt_id, attempt = _scaffold_attempt_or_raise(
         data.learner_id, data.attempt_id)
-    judged = _judge_attempt(data.learner_id, attempt, data.text.strip())
+    text = data.text.strip()
+    judged = _judge_attempt(data.learner_id, attempt, text)
     attempt["step"] = "done"
-    words = len(data.text.split())
+    words = len(text.split())
     store.log_event(data.learner_id, "Scaffold", "twin", "rewrite",
                     f"attempt_id={attempt_id} module={attempt['module']} words={words}")
     extra = {"message": "Saved. Read it once more against the pattern."}
     if judged is not None:
         judged["next_step"] = "done"
         extra["assessment"] = judged
+        first, first_score = attempt.get("first_try"), attempt.get("first_score")
+        if first is not None and first_score is not None:
+            if judged["score"] > first_score:
+                line = "You moved up. Well done."
+            elif judged["score"] == first_score:
+                line = "Same score. Read the hint once more and try again."
+            else:
+                line = "This one lost the point. Go back to your first line."
+            extra["comparison"] = (
+                f"First try (score {first_score} of 2): '{first}' "
+                f"Rewrite (score {judged['score']} of 2): '{text}'. {line}")
+        else:
+            extra["comparison"] = (
+                f"Rewrite (score {judged['score']} of 2): '{text}'.")
     return _scaffold_view(attempt_id, attempt, extra)
 
 
@@ -4604,6 +4904,9 @@ PRACTICE_LABELS = {
     "developing-paragraphs": "supporting line",
     "coherence-flow": "continuing line",
     "using-sources": "sourced line",
+    "mechanics": "corrected line",
+    "referencing-styles": "cited line",
+    "academic-vocabulary": "formal line",
     "genre": "{genre} opening",
 }
 
@@ -4625,6 +4928,15 @@ WEAK_REPAIRS = {
     "using-sources": ["People say {topic} is good.",
                       "Everyone knows about {topic}.",
                       "I heard that {topic} matters."],
+    "mechanics": ["{topic} is very interesting",
+                  "i like {topic} a lot",
+                  "The {topic} are nice and good"],
+    "referencing-styles": ["{topic} is good for all, says someone.",
+                           "Experts say {topic} matters a lot.",
+                           "I read that {topic} is useful somewhere."],
+    "academic-vocabulary": ["{topic} is very nice and good.",
+                            "{topic} is a big thing for us.",
+                            "I like {topic} a lot, it is nice."],
     "genre": ["This {genre} is about {topic} and stuff.",
               "Hello, this is my {genre}.",
               "{topic} is the best, trust me."],
