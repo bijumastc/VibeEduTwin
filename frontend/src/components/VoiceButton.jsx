@@ -33,6 +33,7 @@ export default function VoiceButton({ onTranscript, disabled }) {
   const [mode, setMode] = useState('idle'); // idle | listening | waiting | browser
   const [status, setStatus] = useState('');
   const [metaText, setMetaText] = useState('');
+  const [fallback, setFallback] = useState(false);
   const ctl = useRef({
     ws: null, ctx: null, stream: null, node: null, rec: null,
     phase: 'idle', ready: false, released: false, done: false,
@@ -107,6 +108,7 @@ export default function VoiceButton({ onTranscript, disabled }) {
     c.released = false;
     c.phase = 'listening';
     setMetaText('');
+    setFallback(false);
     setMode('listening');
     setStatus('Listening… release to stop.');
 
@@ -124,10 +126,22 @@ export default function VoiceButton({ onTranscript, disabled }) {
       stopAudio();
       setMode('idle');
       setStatus('');
+      setFallback(false);
       if (text) {
         setMetaText(text);
         onTranscript(text, 'meta');
       }
+    };
+    // Meta failed: show the real error and offer the browser mic in one tap.
+    const showVoiceError = (text) => {
+      if (c.done) return;
+      c.done = true;
+      c.phase = 'idle';
+      stopAudio();
+      setMode('idle');
+      setStatus(text);
+      setMetaText('');
+      setFallback(true);
     };
 
     try {
@@ -173,11 +187,13 @@ export default function VoiceButton({ onTranscript, disabled }) {
         } else if (msg.type === 'final') {
           toIdle((msg.text || '').trim());
         } else if (msg.type === 'meta_error' || msg.type === 'error') {
-          toBrowser();
+          showVoiceError(msg.message || 'Transcription failed. Try again.');
         }
       };
-      ws.onerror = toBrowser;
-      ws.onclose = () => { if (!c.done) toBrowser(); };
+      ws.onerror = () => showVoiceError('Voice connection failed before any transcript.');
+      ws.onclose = () => {
+        if (!c.done) showVoiceError('Voice connection closed before any transcript.');
+      };
     } catch {
       toBrowser();
     }
@@ -213,6 +229,17 @@ export default function VoiceButton({ onTranscript, disabled }) {
       {metaText && mode === 'idle' && (
         <button className="btn secondary" onClick={() => startBrowser(ctl.current.browserLang)}>
           Wrong transcript?
+        </button>
+      )}
+      {fallback && mode === 'idle' && (
+        <button
+          className="btn secondary"
+          onClick={() => {
+            setFallback(false);
+            startBrowser(ctl.current.browserLang);
+          }}
+        >
+          Use browser mic instead
         </button>
       )}
       {status && <span className="muted"> {status}</span>}

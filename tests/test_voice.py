@@ -208,8 +208,31 @@ def test_meta_failure_signals_browser_fallback(tmp_db, monkeypatch):
             while True:
                 msg = ws.receive_json()
                 if msg["type"] == "meta_error":
+                    assert "rate limited" in msg["message"]
                     break
                 assert msg["type"] == "partial"
+
+
+def test_voice_timeout_answers_instead_of_hanging(tmp_db, monkeypatch):
+    def silent(ws, received):
+        received["handshake"] = json.loads(ws.recv())
+        try:
+            ws.recv()  # then never ack: block until the client gives up
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main, "VOICE_TIMEOUT", 0.5)
+    learner_id = _learner(tmp_db)
+    with _fake_meta(monkeypatch, silent) as received:
+        client = TestClient(main.app)
+        with client.websocket_connect(
+                f"/ws/transcribe?learner_id={learner_id}") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            msg = ws.receive_json()
+            assert msg["type"] == "meta_error"
+            assert msg["reason"] == "timeout"
+            assert "timed out" in msg["message"]
+    assert received["handshake"]["audioEncoding"] == "PCM_16KHZ"
 
 
 def test_missing_key_signals_browser_fallback(tmp_db, monkeypatch):
@@ -241,6 +264,8 @@ def test_mic_button_on_write_and_twin():
     assert "webkitSpeechRecognition" in voice
     assert "ml-IN" in voice
     assert "Wrong transcript" in voice
+    assert "Use browser mic instead" in voice
+    assert "msg.message" in voice
     write = (ROOT / "frontend" / "src" / "screens" / "Write.jsx").read_text(
         encoding="utf-8")
     assert "VoiceButton" in write

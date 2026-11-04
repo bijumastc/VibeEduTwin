@@ -77,8 +77,8 @@ def test_scan_raw_base64_gets_data_url(tmp_db, monkeypatch):
     assert block["image_url"]["url"] == "data:image/jpeg;base64,abc123"
 
 
-def test_scan_rejects_mismatched_unclear_and_retries(tmp_db, monkeypatch):
-    replies = [_scan_reply("One [unclear] two [unclear].", ["One"]),
+def test_scan_rejects_bad_shape_and_retries(tmp_db, monkeypatch):
+    replies = [json.dumps({"text": ""}),
                _scan_reply("One [unclear] two.", ["One"])]
     calls = []
 
@@ -101,14 +101,64 @@ def test_validate_scan_rejects_bad_shapes():
     assert main._validate_scan({"text": "", "unclear": []}) is None
     assert main._validate_scan({"text": "Nice.", "unclear": "x"}) is None
     assert main._validate_scan({"text": "Nice.", "unclear": [1]}) is None
-    assert main._validate_scan(
-        {"text": "A [unclear] b.", "unclear": []}) is None
-    assert main._validate_scan(
-        {"text": "A b.", "unclear": ["A"]}) is None
     good = main._validate_scan({"text": "A [unclear] b.", "unclear": ["A"]})
     assert good == {"text": "A [unclear] b.", "unclear": ["A"]}
     assert main._validate_scan({"text": "A b.", "unclear": []}) == \
         {"text": "A b.", "unclear": []}
+
+
+def test_validate_scan_accepts_missing_unclear_list():
+    # Live models omit the key on confident transcriptions; the marks in
+    # the text still drive highlighting, so this must pass, not fall back.
+    assert main._validate_scan({"text": "Plastic is bad."}) == \
+        {"text": "Plastic is bad.", "unclear": []}
+    assert main._validate_scan({"text": "Plastic is bad.",
+                                "unclear": None}) == \
+        {"text": "Plastic is bad.", "unclear": []}
+    assert main._validate_scan(
+        {"text": "A [unclear] b.", "unclear": []}) == \
+        {"text": "A [unclear] b.", "unclear": []}
+
+
+def test_scan_failure_logs_real_error(tmp_db, monkeypatch):
+    def bad_chat(messages):
+        raise main.SparkError("HTTP 400: bad image")
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", bad_chat)
+    learner_id = _learner(tmp_db)
+    res = main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
+                                                image=FAKE_IMAGE))
+    assert res == {"ok": False, "message": "Please type your paragraph."}
+    logged = [r for r in store.get_events(learner_id) if r["tool"] == "scan"]
+    assert len(logged) == 1
+    assert "HTTP 400: bad image" in logged[0]["result"]
+
+
+def test_spark_post_keeps_api_error_body(monkeypatch):
+    import io
+    import urllib.error
+
+    def raising(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "Bad Request", {},
+            io.BytesIO(b'{"error": "bad image"}'))
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", raising)
+    with pytest.raises(main.SparkError) as exc:
+        main._spark_post("http://x", {}, "K", 20)
+    assert "HTTP 400" in str(exc.value)
+    assert "bad image" in str(exc.value)
+
+
+def test_spark_post_names_timeouts(monkeypatch):
+    def hanging(req, timeout=None):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", hanging)
+    with pytest.raises(main.SparkError) as exc:
+        main._spark_post("http://x", {}, "K", 20)
+    assert "timed out after 20s" in str(exc.value)
 
 
 def test_scan_exhausts_retries_then_fallback(tmp_db, monkeypatch):

@@ -36,6 +36,7 @@ import asyncio
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
@@ -3390,13 +3391,26 @@ class SparkError(Exception):
 
 
 def _spark_post(url: str, body: dict, key: str, timeout: int) -> dict:
-    """POST JSON to the Model API; return the decoded response (mock point)."""
+    """POST JSON to the Model API; return the decoded response (mock point).
+
+    HTTP errors keep the API's status and message so backend logs show the
+    real failure instead of a bare status line.
+    """
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json",
                  "Authorization": f"Bearer {key}"})
-    with urllib.request.urlopen(req, timeout=timeout) as res:
-        return json.loads(res.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            return json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            detail = ""
+        raise SparkError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
+    except TimeoutError as exc:
+        raise SparkError(f"request timed out after {timeout}s") from exc
 
 
 def _spark_chat(messages: list[dict],
@@ -3698,32 +3712,38 @@ def _scan_messages(image_url: str) -> list[dict]:
 
 
 def _validate_scan(data) -> dict | None:
-    """Non-empty text with one unclear entry per [unclear] mark."""
+    """Non-empty text plus the unclear list (missing means none found).
+
+    The unclear list is informational: highlighting works off the [unclear]
+    marks in the text, so a confident transcription without the key is
+    still a pass.
+    """
     if not isinstance(data, dict):
         return None
     text = (data.get("text") or "").strip()
-    unclear = data.get("unclear")
+    unclear = data.get("unclear") or []
     if not text or not isinstance(unclear, list):
         return None
     if any(not isinstance(u, str) for u in unclear):
         return None
-    if len(unclear) != text.count("[unclear]"):
-        return None
     return {"text": text, "unclear": unclear}
 
 
-def _scan_with_spark(image_url: str) -> dict | None:
-    """Transcription passing validation, or None after retries."""
+def _scan_with_spark(image_url: str) -> tuple[dict | None, str | None]:
+    """Transcription passing validation, or (None, last error) after retries."""
     messages = _scan_messages(image_url)
+    last_error = "no response"
     for _ in range(1 + SPARK_MAX_REGENS):
         try:
             data = json.loads(_spark_chat(messages))
-        except (SparkError, ValueError):
+        except (SparkError, ValueError) as exc:
+            last_error = str(exc)[:200]
             continue
         fields = _validate_scan(data)
         if fields is not None:
-            return fields
-    return None
+            return fields, None
+        last_error = "invalid transcription shape"
+    return None, last_error
 
 
 @app.post("/drafts/scan")
@@ -3736,10 +3756,10 @@ def post_draft_scan(data: DraftScanIn):
         return {"ok": False, "message": SCAN_FALLBACK}
     url = raw if raw.startswith("data:image/") else \
         f"data:image/jpeg;base64,{raw}"
-    found = _scan_with_spark(url)
+    found, error = _scan_with_spark(url)
     if found is None:
         store.log_event(data.learner_id, "Write", "twin", "scan",
-                        "scan failed")
+                        f"scan failed: {error}")
         return {"ok": False, "message": SCAN_FALLBACK}
     store.log_event(
         data.learner_id, "Write", "twin", "scan",
@@ -4594,6 +4614,18 @@ def post_delete_data(data: DeleteDataIn):
 MUSE_ASR_URL = "wss://api.meta.ai/v1/asr/realtime"
 MUSE_ASR_MODEL = "muse-voice-transcribe-1.0"
 TRANSCRIBE_CREDIT = "Transcribed by Muse Voice Transcribe"
+# One session budget: connect, handshake, and relay share it, so a stalled
+# server answers with a timeout error instead of hanging the mic forever.
+VOICE_TIMEOUT = 20
+
+
+class VoiceError(Exception):
+    """A voice failure with a reason and a learner-facing message."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
 
 # Meta's documented languageBias names for our learners. Malayalam is not on
 # Meta's documented list: the hint is omitted (auto-detect) and Meta is still
@@ -4677,13 +4709,32 @@ def parse_muse_event(event: dict) -> dict:
     return {"kind": "ignore"}
 
 
-async def _transcribe_relay(browser: WebSocket, meta) -> tuple[str | None, bool]:
+def _meta_close_note(meta) -> str | None:
+    """Why Meta closed the session, for the error the learner sees."""
+    try:
+        code = meta.close_code
+    except Exception:
+        return None
+    if code is None or code == 1000:
+        return None
+    try:
+        reason = meta.close_reason or ""
+    except Exception:
+        reason = ""
+    note = f"Meta closed the session ({code})"
+    return f"{note}: {reason}" if reason else note
+
+
+async def _transcribe_relay(browser: WebSocket, meta
+                            ) -> tuple[str | None, bool, str | None]:
     """Pump audio browser -> Meta and transcripts Meta -> browser.
 
-    Returns (final transcript or None, browser still connected).
+    Returns (final transcript or None, browser still connected, failure note
+    or None). Both pump tasks are always stopped, even on cancellation.
     """
     final: str | None = None
     alive = True
+    note: str | None = None
 
     async def upstream() -> None:
         nonlocal alive
@@ -4713,7 +4764,7 @@ async def _transcribe_relay(browser: WebSocket, meta) -> tuple[str | None, bool]
             alive = False
 
     async def downstream() -> None:
-        nonlocal final
+        nonlocal final, note
         try:
             async for message in meta:
                 if isinstance(message, bytes):
@@ -4733,30 +4784,91 @@ async def _transcribe_relay(browser: WebSocket, meta) -> tuple[str | None, bool]
                     except Exception:
                         break
                 elif parsed["kind"] == "error":
+                    note = parsed["message"] or "Meta error"
                     break
         except Exception:
             pass
 
     up = asyncio.create_task(upstream())
     down = asyncio.create_task(downstream())
-    await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
-    if up.done() and alive and not down.done():
-        # Stop was sent: keep reading Meta for the final (bounded).
-        try:
-            await asyncio.wait_for(down, timeout=30)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            down.cancel()
-    else:
-        # Browser gone, or Meta finished first: stop the other side.
+    try:
+        await asyncio.wait({up, down}, return_when=asyncio.FIRST_COMPLETED)
+        if up.done() and alive and not down.done():
+            # Stop was sent: keep reading Meta for the final (bounded).
+            try:
+                await asyncio.wait_for(down, timeout=30)
+            except asyncio.TimeoutError:
+                down.cancel()
+        else:
+            # Browser gone, or Meta finished first: stop the other side.
+            for task in (up, down):
+                if not task.done():
+                    task.cancel()
+    finally:
         for task in (up, down):
-            if not task.done():
-                task.cancel()
-    for task in (up, down):
+            task.cancel()
+        await asyncio.gather(up, down, return_exceptions=True)
+    if final is None and note is None:
+        note = _meta_close_note(meta)
+    return final, alive, note
+
+
+async def _voice_fail(browser: WebSocket, learner_id: int, reason: str,
+                      message: str) -> None:
+    """Tell the browser the real failure, log it, and close (never hangs)."""
+    try:
+        await browser.send_json({"type": "meta_error", "reason": reason,
+                                 "message": message})
+    except Exception:
+        pass
+    store.log_event(learner_id, "Voice", "twin", "transcribe",
+                    f"voice failed ({reason}): {message[:140]}")
+    try:
+        await browser.close()
+    except Exception:
+        pass
+
+
+async def _meta_voice_session(browser: WebSocket, api_key: str, hint: list[str]
+                              ) -> tuple[str | None, bool, str | None]:
+    """Meta connect + handshake + relay. Returns (final, alive, note).
+
+    Raises VoiceError with the failure reason. Always closes Meta itself so
+    a session timeout never leaks the server-side session.
+    """
+    try:
+        import websockets
+    except ImportError:  # pragma: no cover - dependency is installed
+        raise VoiceError("no-client",
+                         "Voice input is not available (missing client).")
+    session_id = f"vibe-{uuid.uuid4().hex[:12]}"
+    try:
+        meta = await websockets.connect(
+            f"{MUSE_ASR_URL}?sessionId={session_id}",
+            open_timeout=VOICE_TIMEOUT)
+    except Exception as exc:
+        raise VoiceError(
+            "connect-failed",
+            "Could not reach the transcription service "
+            f"({str(exc)[:100]}).") from exc
+    try:
         try:
-            await task
+            await meta.send(json.dumps(muse_handshake(api_key, hint)))
+            ack = json.loads(await meta.recv())
+        except Exception:
+            ack = {}
+        if "sessionId" not in ack:
+            parsed = parse_muse_event(ack)
+            raise VoiceError(
+                "handshake-failed",
+                parsed.get("message") or _meta_close_note(meta)
+                or "The transcription service rejected the session.")
+        return await _transcribe_relay(browser, meta)
+    finally:
+        try:
+            await meta.close()
         except (asyncio.CancelledError, Exception):
             pass
-    return final, alive
 
 
 @app.websocket("/ws/transcribe")
@@ -4767,12 +4879,15 @@ async def ws_transcribe(browser: WebSocket, learner_id: int = 0):
     {"type": "ready", "metaHint": [...], "browserLang": "ml-IN"}; send binary
     PCM16 mono 16 kHz frames while holding Speak; send {"type": "stop"} on
     release. The server answers {"type": "partial"/"final", "text"} or
-    {"type": "meta_error"} (fall back to the browser recognizer).
+    {"type": "meta_error", "reason", "message"} with the real failure. The
+    Meta session shares one VOICE_TIMEOUT budget: a stalled server answers
+    with a timeout error instead of hanging the mic.
     """
     await browser.accept()
     learner = store.get_learner(learner_id)
     if learner is None:
-        await browser.send_json({"type": "error", "reason": "unknown-learner"})
+        await browser.send_json({"type": "error", "reason": "unknown-learner",
+                                 "message": "Learner not found. Try again."})
         await browser.close()
         return
     language = learner.get("language_preference") or ""
@@ -4781,52 +4896,39 @@ async def ws_transcribe(browser: WebSocket, learner_id: int = 0):
                              "browserLang": browser_speech_lang(language)})
     api_key = _meta_api_key()
     if not api_key:
-        await browser.send_json({"type": "meta_error", "reason": "no-key"})
-        await browser.close()
+        await _voice_fail(browser, learner_id, "no-key",
+                          "Voice input is not available (missing API key).")
         return
     try:
-        import websockets
-    except ImportError:  # pragma: no cover - dependency is installed
-        await browser.send_json({"type": "meta_error", "reason": "no-client"})
-        await browser.close()
+        final, alive, note = await asyncio.wait_for(
+            _meta_voice_session(browser, api_key, hint),
+            timeout=VOICE_TIMEOUT)
+    except asyncio.TimeoutError:
+        await _voice_fail(
+            browser, learner_id, "timeout",
+            f"Voice input timed out after {VOICE_TIMEOUT} seconds. Try again.")
         return
-    session_id = f"vibe-{uuid.uuid4().hex[:12]}"
-    try:
-        meta = await websockets.connect(
-            f"{MUSE_ASR_URL}?sessionId={session_id}", open_timeout=30)
-    except Exception:
-        await browser.send_json({"type": "meta_error", "reason": "connect-failed"})
-        await browser.close()
+    except VoiceError as exc:
+        await _voice_fail(browser, learner_id, exc.reason, exc.message)
         return
-    try:
-        await meta.send(json.dumps(muse_handshake(api_key, hint)))
-        try:
-            ack = json.loads(await meta.recv())
-        except Exception:
-            ack = {}
-        if "sessionId" not in ack:
-            await browser.send_json({"type": "meta_error",
-                                     "reason": "handshake-failed"})
-            return
-        final, alive = await _transcribe_relay(browser, meta)
-        if not alive:
-            return
-        if final is None:
-            await browser.send_json({"type": "meta_error",
-                                     "reason": "transcribe-failed"})
-        else:
-            await browser.send_json({"type": "final", "text": final})
-            store.log_event(learner_id, "Voice", "twin", "transcribe",
-                            TRANSCRIBE_CREDIT)
-    finally:
-        try:
-            await meta.close()
-        except Exception:
-            pass
+    if not alive:
         try:
             await browser.close()
         except Exception:
             pass
+        return
+    if final is None:
+        message = f"Transcription failed ({note})." if note \
+            else "Transcription failed. Try again."
+        await _voice_fail(browser, learner_id, "transcribe-failed", message)
+        return
+    await browser.send_json({"type": "final", "text": final})
+    store.log_event(learner_id, "Voice", "twin", "transcribe",
+                    TRANSCRIBE_CREDIT)
+    try:
+        await browser.close()
+    except Exception:
+        pass
 
 
 @app.post("/teacher/practice-sets")
