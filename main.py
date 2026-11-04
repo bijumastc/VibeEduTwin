@@ -212,6 +212,13 @@ class ScaffoldRewriteIn(BaseModel):
     text: str = ""
 
 
+class ScaffoldCheckIn(BaseModel):
+    learner_id: int
+    attempt_id: str
+    text: str = ""
+    self_rating: str = ""
+
+
 class DeleteDataIn(BaseModel):
     learner_id: int
 
@@ -2291,6 +2298,146 @@ def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
             "motivation": _motivation_card(
                 first, band, strength, text, [action],
                 DISCIPLINE_TOPICS[discipline], f"Next goal: {action}")}
+
+
+# --- Topic-sentence self-check --------------------------------------------------
+# The Learn task's "Check" section: the learner rates their own topic sentence
+# good/bad, then gets a verdict, motivating feedback, the failing points, how
+# to improve each, and an improved version of their line. Fully deterministic
+# (offline-safe): the core matches the ladder assessor (one sentence, 8+
+# words, a claim verb) and Check adds the topic name and mechanics. When the
+# line already states a point, the improved version is the learner's own line
+# cleaned up; otherwise it is an authored same-topic model (each passes Check
+# itself, guarded by test). No score or activity change: a mirror, not a test.
+CHECK_TOPIC_STOPWORDS = {"the", "a", "an"}
+
+CHECK_TOPIC_MODELS = {
+    "Sciences":
+        "Evaporation explains why wet clothes dry faster on a hot, windy day.",
+    "Technology":
+        "Password safety explains why one leaked password can open many accounts.",
+    "Medicine":
+        "Hand washing explains why clean hands stop germs before they reach the mouth.",
+    "Arts & Humanities":
+        "The freedom struggle shows how ordinary people won an extraordinary change.",
+    "Commerce & Management":
+        "Festival sales show why small shops depend on one busy season.",
+    "Social Sciences":
+        "Village life shows why shared work matters more than money.",
+}
+
+_CHECK_ANNOUNCE = ("i will tell you", "i am going to tell", "i will talk about",
+                   "this paragraph is about", "in this paragraph",
+                   "there are many things", "there is a lot", "there are a lot")
+
+
+def _check_topic_words(discipline: str) -> tuple[str, list[str]]:
+    """The task topic plus the words that prove the line names it."""
+    topic = DISCIPLINE_TOPICS[discipline]
+    words = [w for w in re.findall(r"[a-z]+", topic.lower())
+             if w not in CHECK_TOPIC_STOPWORDS]
+    return topic, words
+
+
+def _polish_line(text: str) -> str:
+    """The learner's line with mechanics fixed (spelling, capital, stop)."""
+    current = (text or "").strip()
+    for _ in range(5):
+        fixes = _grammar_fixes(current)
+        if not fixes or fixes[0]["wrong"] not in current:
+            break
+        current = current.replace(fixes[0]["wrong"], fixes[0]["right"], 1)
+    current = current.strip()
+    if current and current[0].isalpha() and not current[0].isupper():
+        current = current[0].upper() + current[1:]
+    if current and current[-1] not in ".!?":
+        current += "."
+    return current
+
+
+def _check_sentence(learner_id: int, attempt: dict, text: str,
+                    self_rating: str) -> dict:
+    """Judge one topic sentence for the Check section (no scoring)."""
+    discipline = attempt["discipline"]
+    topic, keywords = _check_topic_words(discipline)
+    words = text.split()
+    lowered = text.lower()
+    fails, fixes = [], []
+    quote = text if len(words) <= 12 else " ".join(words[:12]) + "..."
+    if len(words) < 3:
+        fails.append("It is too short to judge yet — write one full line about "
+                     f"{topic}.")
+        fixes.append(f"Write one full sentence that names {topic}.")
+        point_ok = False
+    else:
+        if _attempt_sentences(text) != 1:
+            fails.append(f"Your line '{quote}' is not one complete sentence yet, "
+                         "so a reader cannot follow it.")
+            fixes.append("Write just ONE sentence. Nothing more.")
+        if not any(k in lowered for k in keywords):
+            fails.append(f"It does not name your topic, {topic}, yet, so a reader "
+                         "cannot tell what the paragraph is about.")
+            fixes.append(f"Name your topic, {topic}, inside the line.")
+        point_ok = (any(v in lowered for v in _CLAIM_VERBS)
+                    and len(words) >= 8)
+        if not point_ok:
+            if any(p in lowered for p in _CHECK_ANNOUNCE):
+                fails.append(f"Your line '{quote}' announces the topic instead of "
+                             "stating one clear point, so a reader cannot tell what "
+                             "the paragraph will prove.")
+            else:
+                fails.append(f"Your line '{quote}' states no clear point yet, so a "
+                             "reader cannot tell what the paragraph will prove.")
+            fixes.append(f"Say what exactly about {topic} in the same line — "
+                         "finish the thought with because or why.")
+        mech = _grammar_fixes(text)
+        no_cap = text[:1].isalpha() and not text[:1].isupper()
+        no_stop = not re.search(r"[.!?]$", text)
+        if mech or no_cap or no_stop:
+            if mech:
+                first = mech[0]
+                fails.append(f"One mechanics slip: '{first['wrong']}' should read "
+                             f"'{first['right']}'. {first['rule']}")
+            else:
+                fails.append("One mechanics slip: the line must start with a "
+                             "capital letter and end with a full stop.")
+            fixes.append("Fix the mechanics slip, then read the line aloud.")
+    verdict = "good" if not fails else "needs_work"
+    if verdict == "good":
+        fixes.append("Keep this shape — topic first, then one point — and use it "
+                     "in your next paragraph.")
+        improved, improved_label = _polish_line(text), "Your line, cleaned up:"
+    elif point_ok:
+        improved, improved_label = _polish_line(text), "Your line, cleaned up:"
+    else:
+        improved = CHECK_TOPIC_MODELS[discipline]
+        improved_label = "One improved version on your topic:"
+    learner = store.get_learner(learner_id) or {}
+    first = ((learner.get("name") or "friend").split() or ["friend"])[0]
+    if verdict == "good":
+        if self_rating == "good":
+            message = (f"{first}, you checked yourself right — this IS a good "
+                       f"topic sentence. It names {topic}, states one clear "
+                       "point, and reads cleanly. That judgment is the real "
+                       "skill: writers who can check their own lines improve fast.")
+        else:
+            message = (f"{first}, you were too strict with yourself — this one is "
+                       f"good. It names {topic} and states one clear point in a "
+                       "single clean line. Trust your eye: it is sharper than you "
+                       "think.")
+    elif self_rating == "bad":
+        message = (f"{first}, honest check — you spotted the gap before I said a "
+                   "word. That honesty is how writers grow. There is one clear "
+                   f"fix: {fixes[0]}")
+    else:
+        message = (f"{first}, good try — you are closer than this line looks. One "
+                   f"thing keeps it from landing: {fails[0]} Fix that and it turns "
+                   "good.")
+    return {"verdict": verdict, "self_rating": self_rating, "message": message,
+            "fails": fails, "fixes": fixes, "improved": improved,
+            "improved_label": improved_label,
+            "rule": LESSON_IDEAS["topic-sentences"], "topic": topic,
+            "quote": quote}
 
 
 # --- Practice Assessor ----------------------------------------------------------
@@ -5498,6 +5645,31 @@ def post_scaffold_rewrite(data: ScaffoldRewriteIn):
             extra["comparison"] = (
                 f"Rewrite (score {judged['score']} of 2): '{text}'.")
     return _scaffold_view(attempt_id, attempt, extra)
+
+
+@app.post("/scaffold/check")
+def post_scaffold_check(data: ScaffoldCheckIn):
+    """Check section: the learner rated their topic sentence; judge it kindly.
+
+    Returns the verdict, motivating feedback, failing points, how to improve
+    each, and an improved line. No score or activity change.
+    """
+    if data.self_rating not in ("good", "bad"):
+        raise HTTPException(status_code=400,
+                            detail="self_rating must be good or bad")
+    attempt_id, attempt = _scaffold_attempt_or_raise(
+        data.learner_id, data.attempt_id)
+    if attempt["module"] != "topic-sentences":
+        raise HTTPException(status_code=400, detail=(
+            "Check is available for the Topic sentences task."))
+    text = (data.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Check text is empty")
+    result = _check_sentence(data.learner_id, attempt, text, data.self_rating)
+    store.log_event(data.learner_id, "Scaffold", "twin", "check",
+                    f"attempt_id={attempt_id} verdict={result['verdict']} "
+                    f"self={data.self_rating}")
+    return result
 
 
 # --- Practice sets: 4 item types ------------------------------------------------

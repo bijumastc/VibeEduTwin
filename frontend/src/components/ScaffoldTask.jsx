@@ -18,11 +18,17 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
   const [lastTry, setLastTry] = useState('');
   const [polish, setPolish] = useState(null);
   const [polishBusy, setPolishBusy] = useState(false);
+  const [checkRes, setCheckRes] = useState(null);
+  const [checkBusy, setCheckBusy] = useState(false);
 
   useEffect(() => {
     api.scaffoldStart(discipline, moduleId)
       .then((res) => setView(res))
       .catch((err) => setError(err.message));
+  }, [discipline, moduleId]);
+
+  useEffect(() => {
+    setCheckRes(null);
   }, [discipline, moduleId]);
 
   const push = (entry) => setFeed((f) => [...f, entry]);
@@ -90,7 +96,21 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
     const text = draft;
     setDraft('');
     if (text.trim()) setLastTry(text.trim());
+    setCheckRes(null);
     call(() => api.scaffoldHelp(view.attempt_id, text), text);
+  };
+  const check = async (rating) => {
+    const text = (draft.trim() || lastTry).trim();
+    if (!text || checkBusy || busy) return;
+    setCheckBusy(true);
+    setError('');
+    try {
+      const res = await api.scaffoldCheck(view.attempt_id, text, rating);
+      setCheckRes({ ...res, checked: text });
+    } catch (err) {
+      setError(err.message);
+    }
+    setCheckBusy(false);
   };
   const show = () => call(() => api.scaffoldShow(view.attempt_id));
   const steps = () => call(() => api.scaffoldSteps(view.attempt_id));
@@ -220,6 +240,63 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
           <button className="btn secondary" onClick={show} disabled={busy}>Show me now</button>
           <div style={{ height: 10 }} />
           <button className="btn secondary" onClick={steps} disabled={busy}>Just show me the steps</button>
+          {moduleId === 'topic-sentences' && (
+            <>
+              <div style={{ height: 10 }} />
+              <div className="card">
+                <div className="card-title">Check</div>
+                {!checkRes && (
+                  <>
+                    <p className="muted">How do you rate your topic sentence?</p>
+                    {!(draft.trim() || lastTry) && (
+                      <p className="muted">Write your sentence above first.</p>
+                    )}
+                    <button
+                      className="btn secondary"
+                      onClick={() => check('good')}
+                      disabled={busy || checkBusy || !(draft.trim() || lastTry)}
+                    >
+                      My sentence is good
+                    </button>{' '}
+                    <button
+                      className="btn secondary"
+                      onClick={() => check('bad')}
+                      disabled={busy || checkBusy || !(draft.trim() || lastTry)}
+                    >
+                      It needs work
+                    </button>
+                    {checkBusy && <p className="loading">Your twin is checking your sentence...</p>}
+                  </>
+                )}
+                {checkRes && (
+                  <>
+                    <p className="muted"><em>Checked: “{checkRes.checked}”</em></p>
+                    <p><strong>{checkRes.verdict === 'good' ? 'Verdict: good.' : 'Verdict: needs work.'}</strong></p>
+                    <p>{checkRes.message}</p>
+                    {checkRes.fails.length > 0 && (
+                      <>
+                        <div className="card-title">Where it fails</div>
+                        <ul>
+                          {checkRes.fails.map((f, i) => <li key={i}>{f}</li>)}
+                        </ul>
+                      </>
+                    )}
+                    <div className="card-title">How to improve</div>
+                    <ul>
+                      {checkRes.fixes.map((f, i) => <li key={i}>{f}</li>)}
+                    </ul>
+                    <div className="card-title">Improved version</div>
+                    <p className="muted">{checkRes.improved_label}</p>
+                    <p>{checkRes.improved}</p>
+                    <p className="muted">The rule: {checkRes.rule}</p>
+                    <button className="btn secondary" onClick={() => setCheckRes(null)} disabled={busy || checkBusy}>
+                      Check again
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
 

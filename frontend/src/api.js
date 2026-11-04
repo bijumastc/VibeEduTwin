@@ -63,6 +63,7 @@ export const api = {
   scaffoldShow: (attempt_id) => post('/scaffold/show', { attempt_id }),
   scaffoldSteps: (attempt_id) => post('/scaffold/steps', { attempt_id }),
   scaffoldRewrite: (attempt_id, text) => post('/scaffold/rewrite', { attempt_id, text }),
+  scaffoldCheck: (attempt_id, text, self_rating) => post('/scaffold/check', { attempt_id, text, self_rating }),
   independence: () => request(`/independence?learner_id=${LEARNER_ID}`),
   signup: (profile) => request('/learners', { method: 'POST', body: JSON.stringify(profile) }),
   teacherGenerate: (requestText, note) => request('/teacher/practice-sets', {

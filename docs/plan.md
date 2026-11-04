@@ -288,3 +288,15 @@ version" after the rewrite. After 6 activities, or from Level 3,
 the skill switches to challenge mode: the productive-struggle ladder
 with "Show me now" available. The task card shows progress toward
 challenge mode ("Guided · 4 of 6 activities").
+
+## Topic-sentence Check
+
+Under the submit button of the Topic sentences Learn task, a Check
+section asks the learner to rate their own line ("My sentence is good"
+/ "It needs work") before any verdict is shown. The twin replies with
+an inspiring message tuned to the self-rating, the verdict, where the
+line fails (one sentence, names the topic, states a point, mechanics),
+how to improve each point, the book rule, and an improved version:
+the learner's own line cleaned up when it states a point, otherwise a
+same-topic model. Check changes no score or activity; each attempt is
+logged for How it decided.

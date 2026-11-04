@@ -1477,6 +1477,7 @@ rigor vapor savor savour tumour splendor ardor ardour clamor apologise
 apologize summarise summarize customise customize plastic nature crab
 grey tire kerb odor theatre theater yourself abroad learnt everybody
 suggest suggestion digestion congestion ingestion exhaustion
+theft
 """.split()
 
 
