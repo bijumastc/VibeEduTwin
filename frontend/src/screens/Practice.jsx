@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, LeveledUp } from '../api.js';
+import Confetti from '../components/Confetti.jsx';
 import HowItDecided from '../components/HowItDecided.jsx';
 import ScanButton from '../components/ScanButton.jsx';
 import SkillBars from '../components/SkillBars.jsx';
@@ -32,6 +33,7 @@ function LevelUpCard({ ups, go }) {
 
   return (
     <div className="card tint">
+      <Confetti key={ups.map((up) => up.skill).join(',')} />
       {ups.map((up) => (
         <div className="card-title" key={up.skill}>
           {up.skill} Level {up.from} → {up.to}

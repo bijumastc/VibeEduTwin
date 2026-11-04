@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import BasedOn from './BasedOn.jsx';
+import FeedbackCard from './FeedbackCard.jsx';
 import ScanButton from './ScanButton.jsx';
 import VoiceButton from './VoiceButton.jsx';
 
@@ -26,10 +27,20 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
   const apply = (res) => {
     setView(res);
     if (res.assessment) {
+      const a = res.assessment;
       push({
         kind: 'assess',
-        label: "Twin's feedback",
-        a: res.assessment,
+        card: {
+          strength: a.strength ? { quote: a.quote, line: a.strength } : null,
+          problems: a.problem
+            ? [{ quote: a.quote, wrong: a.problem, why: '', fix: a.next_action || '' }]
+            : [],
+          model: null,
+          your_turn: a.status === 'ok' ? a.your_turn : '',
+          motivation: a.motivation,
+        },
+        modelSentence: a.status === 'ok' ? a.model : null,
+        fallback: a.status === 'ok' ? '' : a.feedback,
       });
     }
     if (res.question) push({ kind: 'twin', label: 'Guiding question', text: res.question });
@@ -113,16 +124,8 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
           ? <div className="card" key={i}><p>{e.text}</p></div>
           : e.kind === 'assess'
             ? (
-              <div className="card" key={i}>
-                <div className="card-title">{e.label}</div>
-                {e.a.strength && <p>{e.a.strength}</p>}
-                {e.a.problem && <p>{e.a.problem}</p>}
-                {!e.a.strength && !e.a.problem && <p>{e.a.feedback}</p>}
-                {e.a.status === 'ok' && e.a.model && (
-                  <p><strong>✏️ Let me show you one:</strong> {e.a.model}</p>
-                )}
-                {e.a.status === 'ok' && e.a.your_turn && <p>{e.a.your_turn}</p>}
-                <p className="muted"><em>Score {e.a.score} of 2</em></p>
+              <div key={i}>
+                <FeedbackCard feedback={e.card} modelSentence={e.modelSentence} fallback={e.fallback} title="Twin's feedback" />
               </div>
             )
           : e.kind === 'steps'

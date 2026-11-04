@@ -76,6 +76,12 @@ structurally checked at serve time and failures are excluded.
   for off-task, nonsense and copied tries). On failure the fixed ladder runs.
   Practice answers use the same checklist with the chosen option as the
   learner's words; rejected drafts fall back to templates.
+- `grammar-quotes`: every grammar fix copies its error exactly from the
+  learner's text.
+- `simple-english`: no formal words, no sentence over 25 words.
+- `no-generic-praise`: none of "great job", "excellent", "amazing". The
+  fixed mood lines ("Outstanding work!" and friends) carry no banned
+  phrase, so celebrations pass while generic praise still fails.
 
 ### Feedback cards (`feedback`)
 
@@ -87,6 +93,9 @@ structurally checked at serve time and failures are excluded.
 - `no-generic-praise`: none of "great job", "excellent", "amazing".
   Rejected Spark drafts retry (max 2 regens), then the deterministic
   template card (two problems, no rewrite) is served.
+  The motivation layer (twin message, grammar fixes, word tips, improve
+  points, critical tip, next goal) is deterministic: every fix copies the
+  learner's exact words, and the same checklist guards the served card.
 
 ## Rubric
 
@@ -190,6 +199,10 @@ diagnosed and given feedback by live Muse Spark (heuristic + template
 fallback without a key). Fixed feedback cards are served for the weak
 paragraph (first sentence as the main problem, one model rewrite) and
 the improved paragraph (sources and long lines as the two problems).
+Both scripted cards use the motivation layout: twin message with the
+learner's first name, three grammar fixes for the weak paragraph (none
+for the clean improved one), word tips, improve points with a
+critical-thinking tip, and a next goal.
 
 Fixed twin response (simple English only), served when the demo
 learner's latest draft is the weak paragraph (the fixed script bypasses

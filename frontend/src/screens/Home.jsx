@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api, OpenModule } from '../api.js';
+import Confetti from '../components/Confetti.jsx';
 
 // My Level: hero for new learners, writing-profile card after diagnosis.
 // Skill chips reuse the Learn module look; the next-win button deep-links
-// into the matching Learn module.
+// into the matching Learn module. Daily goal and goodbye wrap up the day.
 const ORDER = ['Grammar', 'Vocabulary', 'Sentence structure', 'Paragraphing',
   'Argument', 'Using sources', 'Academic tone'];
 
@@ -31,6 +32,16 @@ export default function Home({ go }) {
   if (state.loading) return <p className="loading">Loading…</p>;
   if (state.error) return <div className="error">{state.error}</div>;
 
+  const daily = state.growth?.daily || { paragraphs: 0, target: 3 };
+  const dailyLine = (
+    <div className="card">
+      <p className="muted">Daily goal: {Math.min(daily.paragraphs, daily.target)} of {daily.target} paragraphs today</p>
+      <div className="bar">
+        <div style={{ width: `${Math.min(100, (daily.paragraphs / daily.target) * 100)}%` }} />
+      </div>
+    </div>
+  );
+
   if (state.drafts.length === 0) {
     return (
       <div>
@@ -45,6 +56,7 @@ export default function Home({ go }) {
           {' · '}
           <button className="linklike" onClick={() => go('write')}>Scan my notebook</button>
         </div>
+        {dailyLine}
         <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
       </div>
     );
@@ -78,7 +90,10 @@ export default function Home({ go }) {
     <div>
       <h2>My Level</h2>
       {leveled.length > 0 && (
-        <div className="levelup">Level up in {leveled.join(', ')}! See My Growth.</div>
+        <>
+          <Confetti key={leveled.join(',')} />
+          <div className="levelup">Level up in {leveled.join(', ')}! See My Growth.</div>
+        </>
       )}
       <div className="card tint">
         <div className="card-title">Your writing profile</div>
@@ -107,6 +122,16 @@ export default function Home({ go }) {
           <button className="linklike" onClick={() => go('write')}>Check my level again</button>
         </div>
       </div>
+      {dailyLine}
+      {daily.paragraphs > 0 && (
+        <div className="card">
+          <div className="card-title">Goodbye for now 👋</div>
+          <p className="muted">
+            Today you wrote {daily.paragraphs} paragraph{daily.paragraphs === 1 ? '' : 's'}.
+            Next time: {next_win.action}. See you soon!
+          </p>
+        </div>
+      )}
       <button className="linklike" onClick={() => go('teacher')}>Teacher tools</button>
     </div>
   );

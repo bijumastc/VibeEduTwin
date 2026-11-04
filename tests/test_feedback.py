@@ -260,9 +260,11 @@ def test_skill_bars_show_levels_reasons_evidence():
 
 def test_feedback_card_shape_and_single_emoji():
     card = _src("components", "FeedbackCard.jsx")
-    for needle in ("Feedback on your paragraph", "What works",
-                   "Let me show you one", "Before:", "After:",
-                   "Rewrite my paragraph"):
+    for needle in ("Feedback on your paragraph", "What went well",
+                   "Grammar fixes:", "Word tips:", "Improve:",
+                   "Think deeper:", "Let me show you one", "Before:", "After:",
+                   "Rewrite my paragraph",
+                   "Compare with a polished version"):
         assert needle in card
     assert card.count("✏️") == 1
     for other in ("🚀", "⚡", "✨", "🎯", "💡", "❤️", "👍", "🌟", "📚"):

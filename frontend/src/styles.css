@@ -149,6 +149,21 @@ input[type="text"] {
 .skill-row { margin-bottom: 10px; }
 .skill-why { margin: 4px 0 0; font-size: 13px; }
 
+.confetti { position: fixed; inset: 0; pointer-events: none; z-index: 50; overflow: hidden; }
+.confetti i {
+  position: absolute;
+  top: -12px;
+  width: 8px;
+  height: 12px;
+  animation: confetti-fall 2.8s ease-in forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(110vh) rotate(540deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confetti { display: none; }
+}
+
 .skill-top {
   display: flex;
   justify-content: space-between;

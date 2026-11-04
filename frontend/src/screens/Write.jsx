@@ -62,14 +62,18 @@ export default function Write({ go }) {
   const [twinOpen, setTwinOpen] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanned, setScanned] = useState(false);
+  const [draftId, setDraftId] = useState(null);
+  const [polish, setPolish] = useState(null);
   const fileRef = useRef(null);
 
   const submit = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
     setError('');
+    setPolish(null);
     try {
       const draft = await api.saveDraft(text.trim(), scanned ? 'scan' : 'typed');
+      setDraftId(draft.draft_id);
       const diagnosis = await api.diagnose(draft.draft_id);
       setResult(diagnosis);
     } catch (err) {
@@ -77,6 +81,25 @@ export default function Write({ go }) {
     }
     setBusy(false);
   };
+
+  // Polished compare: unlocked once their own rewrite has been diagnosed.
+  const fetchPolish = async () => {
+    if (!draftId || (polish && polish.loading)) return;
+    setPolish({ loading: true });
+    try {
+      const res = await api.polish(draftId);
+      if (res.ok) {
+        setPolish({ text: res.polished, original: res.original });
+      } else {
+        setPolish({ error: res.message });
+      }
+    } catch (err) {
+      setPolish({ error: err.message });
+    }
+  };
+
+  const polishUnlocked = !!result && !!result.comparison
+    && result.comparison !== 'This is your starting point.';
 
   const scan = async (file) => {
     if (!file || scanBusy) return;
@@ -103,6 +126,8 @@ export default function Write({ go }) {
     setResult(null);
     setError('');
     setScanned(false);
+    setDraftId(null);
+    setPolish(null);
   };
 
   // Rewrite flow: back to the text box with the paragraph kept, so the
@@ -111,6 +136,7 @@ export default function Write({ go }) {
     setResult(null);
     setError('');
     setScanned(false);
+    setPolish(null);
   };
 
   const skillDetails = {};
@@ -153,6 +179,7 @@ export default function Write({ go }) {
           >
             {scanBusy ? 'Reading…' : 'Scan my paper'}
           </button>
+          {scanBusy && <p className="loading">Reading your paper...</p>}
           <input
             ref={fileRef}
             type="file"
@@ -173,7 +200,12 @@ export default function Write({ go }) {
           <div className="card">
             <SkillBars scores={result.scores} weakest={result.weakest} levels={result.level_changes} details={skillDetails} />
           </div>
-          <FeedbackCard feedback={result.feedback} onRewrite={rewrite} />
+          <FeedbackCard
+            feedback={result.feedback}
+            onRewrite={rewrite}
+            polish={{ unlocked: polishUnlocked, ...(polish || {}) }}
+            onPolish={fetchPolish}
+          />
           <HowScored />
           <div className="card accent-soft">
             <div className="card-title">Your twin says</div>

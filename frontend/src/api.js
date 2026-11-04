@@ -37,6 +37,7 @@ export const api = {
   saveDraft: (content, source) => post('/drafts', { content, source: source || 'typed' }),
   scanPaper: (image) => post('/drafts/scan', { image }),
   diagnose: (draft_id) => post('/diagnose', { draft_id }),
+  polish: (draft_id) => post('/polish', { draft_id }),
   getPractice: () => request(`/practice?learner_id=${LEARNER_ID}`),
   submitAnswers: (set_id, answers) => post('/practice/answers', { set_id, answers }),
   levelCheck: () => post('/level-check', {}),

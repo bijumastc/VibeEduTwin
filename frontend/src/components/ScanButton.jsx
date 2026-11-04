@@ -72,6 +72,7 @@ export default function ScanButton({ onTranscript, onError, disabled }) {
       >
         {busy ? 'Reading…' : 'Scan my paper'}
       </button>
+      {busy && <p className="loading">Reading your paper...</p>}
       <input
         ref={fileRef}
         type="file"

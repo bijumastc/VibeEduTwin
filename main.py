@@ -147,6 +147,11 @@ class DiagnoseIn(BaseModel):
     content: str | None = None
 
 
+class PolishIn(BaseModel):
+    learner_id: int
+    draft_id: int
+
+
 class PracticeAnswersIn(BaseModel):
     learner_id: int
     set_id: str
@@ -2033,7 +2038,9 @@ def _assess_with_spark(learner_id: int, module_id: str, discipline: str,
         verdict = verify("assessor", {
             "status": fields["status"],
             "feedback": _assessment_feedback(fields), "attempt": text,
-            "quote": fields["quote"], "score": fields["score"]})
+            "quote": fields["quote"], "score": fields["score"],
+            "fields": [fields["strength"], fields["problem"],
+                       fields["next_action"]]})
         if verdict["pass"]:
             return fields
         failed = verdict["failed"]
@@ -2132,15 +2139,26 @@ def _demo_assessment(learner_id: int, attempt: dict) -> dict:
     store.save_skill_scores(learner_id, {skill: new_score})
     store.log_event(learner_id, "Scaffold", "twin", "assess",
                     "score=1/2 status=ok (demo script)")
+    learner = store.get_learner(learner_id) or {}
+    first = ((learner.get("name") or "friend").split() or ["friend"])[0]
+    action = ASSESS_FALLBACK_ACTION["topic-sentences"]
     return {"status": "ok",
             "feedback": f"{DEMO_ASSESSMENT_STRENGTH} {DEMO_ASSESSMENT_PROBLEM}",
             "strength": DEMO_ASSESSMENT_STRENGTH,
             "problem": DEMO_ASSESSMENT_PROBLEM, "quote": quote, "score": 1,
-            "next_step": "question", "skill": skill,
+            "next_step": "question",
+            "next_action": "Say what exactly about the topic in the same line.",
+            "skill": skill,
             "skill_score": new_score,
             "skill_level": level_for_score(new_score),
             "model": DEMO_ASSESSMENT_MODEL,
-            "your_turn": DEMO_ASSESSMENT_YOUR_TURN}
+            "your_turn": DEMO_ASSESSMENT_YOUR_TURN,
+            "motivation": _motivation_card(
+                first, "fair",
+                {"quote": quote, "line": DEMO_ASSESSMENT_STRENGTH},
+                DEMO_ASSESS_ATTEMPT, [action],
+                DISCIPLINE_TOPICS[attempt["discipline"]],
+                f"Next goal: {action}")}
 
 
 def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
@@ -2183,14 +2201,25 @@ def _judge_attempt(learner_id: int, attempt: dict, text: str) -> dict | None:
     starter = ASSESS_STARTERS[module_id].format(
         topic=DISCIPLINE_TOPICS[discipline],
         genre=DISCIPLINE_GENRES[discipline])
+    learner = store.get_learner(learner_id) or {}
+    first = ((learner.get("name") or "friend").split() or ["friend"])[0]
+    band = ("strong" if fields["score"] == 2
+            else "fair" if fields["score"] == 1 else "weak")
+    strength = ({"quote": fields["quote"], "line": fields["strength"]}
+                if fields["strength"] else None)
+    action = ASSESS_FALLBACK_ACTION[module_id]
     return {"status": fields["status"], "feedback": feedback,
             "strength": fields["strength"], "problem": fields["problem"],
             "quote": fields["quote"], "score": fields["score"],
-            "next_step": fields["next_step"], "skill": skill,
+            "next_step": fields["next_step"], "next_action": fields["next_action"],
+            "skill": skill,
             "skill_score": new_score,
             "skill_level": level_for_score(new_score),
             "model": worked_model(module_id, discipline),
-            "your_turn": f"Your turn: finish this starter: '{starter}'"}
+            "your_turn": f"Your turn: finish this starter: '{starter}'",
+            "motivation": _motivation_card(
+                first, band, strength, text, [action],
+                DISCIPLINE_TOPICS[discipline], f"Next goal: {action}")}
 
 
 # --- Practice Assessor ----------------------------------------------------------
@@ -3010,6 +3039,16 @@ def _feedback_verify_payload(feedback: dict, text: str) -> dict:
         quotes.append(model["before"])
         fields.extend([model["after"], model["changed"]])
     fields.append(feedback["your_turn"])
+    motivation = feedback.get("motivation") or {}
+    for fix in motivation.get("grammar_fixes", []):
+        quotes.append(fix["wrong"])
+        fields.extend([fix["right"], fix["rule"]])
+    for tip in motivation.get("vocab_tips", []):
+        fields.append(tip["tip"])
+    fields.extend(motivation.get("improve", []))
+    for key in ("critical_tip", "next_goal", "twin_message"):
+        if motivation.get(key):
+            fields.append(motivation[key])
     return {"text": text, "quotes": quotes, "fields": fields,
             "before": model.get("before", "") if model else "",
             "after": model.get("after", "") if model else ""}
@@ -3064,6 +3103,144 @@ def _cap_fallback_scores(text: str, scores: dict) -> dict:
     """Cautious heuristic: at most L3, or L2 under three sentences."""
     cap = 39 if len(_text_sentences(text)) < 3 else 59
     return {skill: min(score, cap) for skill, score in scores.items()}
+
+
+# --- Motivation layer (twin message, fixes, tips, goal) ----------------------
+# Deterministic and quotable: every fix copies the learner's exact words.
+TWIN_MOODS = {
+    "strong": ("Outstanding work!", "\U0001F31F"),
+    "good": ("You're thinking well!", "\U0001F44D"),
+    "fair": ("Good effort - you're getting there!", "\U0001F4AA"),
+    "weak": ("Every expert started here. Let's learn from this one!", "\U0001F331"),
+}
+
+
+def _twin_message(name: str, band: str, quote: str | None) -> str:
+    """2-3 warm sentences: mood line, name, strength quote, one emoji."""
+    mood, emoji = TWIN_MOODS[band]
+    if band == "weak":
+        if quote:
+            mid = f"Your line '{quote}' needs one clear point."
+        else:
+            mid = "Your try needs one clear point."
+        return (f"Every expert started here. Let's learn from this one! "
+                f"{emoji} {name}, {mid[0].lower() + mid[1:]}")
+    if quote:
+        core = f"your line '{quote}' does the job"
+    else:
+        core = "you put real thoughts on paper"
+    closer = {"strong": "Keep writing like this.",
+              "good": "One small fix will lift it higher.",
+              "fair": "Let's fix its weak spot together."}[band]
+    return f"{mood} {emoji} {name}, {core}. {closer}"
+
+
+_COMMON_MISSPELLINGS = {
+    "recieve": "receive", "seperate": "separate", "occured": "occurred",
+    "writting": "writing", "grammer": "grammar", "enviroment": "environment",
+    "tommorow": "tomorrow", "freind": "friend", "beleive": "believe",
+    "definately": "definitely", "goverment": "government",
+    "knowlege": "knowledge",
+}
+
+
+def _grammar_fixes(text: str) -> list[dict]:
+    """Up to 3 real errors: exact sentence, corrected, simple rule."""
+    fixes = []
+    for sent in _text_sentences(text):
+        if len(fixes) >= 3:
+            break
+        if sent and sent[0].isalpha() and not sent[0].isupper():
+            fixes.append({"wrong": sent, "right": sent[0].upper() + sent[1:],
+                          "rule": "Start each sentence with a capital "
+                                  "letter."})
+            continue
+        lowered = f" {sent} "
+        if " i " in lowered:
+            fixed = sent.replace(" i ", " I ", 1)
+            fixes.append({"wrong": sent, "right": fixed,
+                          "rule": "Write 'I' with a capital letter."})
+            continue
+        doubled = re.search(r"\b(\w+) \1\b", sent, re.IGNORECASE)
+        if doubled:
+            fixed = sent[:doubled.start()] + doubled.group(1) \
+                + sent[doubled.end():]
+            fixes.append({"wrong": sent, "right": fixed,
+                          "rule": "Say each word once."})
+            continue
+        nospace = re.search(r"[.!?][A-Za-z]", sent)
+        if nospace:
+            at = nospace.start() + 1
+            fixes.append({"wrong": sent, "right": sent[:at] + " " + sent[at:],
+                          "rule": "Leave a space after each full stop."})
+            continue
+        article = re.search(r"\ba ([aeiouAEIOU])", sent)
+        if article:
+            fixed = sent[:article.start()] + "an " \
+                + sent[article.start() + 2:]
+            fixes.append({"wrong": sent, "right": fixed,
+                          "rule": "Use 'an' before a, e, i, o and u."})
+            continue
+        for bad, good in _COMMON_MISSPELLINGS.items():
+            hit = re.search(r"\b" + re.escape(bad) + r"\b", sent)
+            if hit:
+                fixed = sent[:hit.start()] + good + sent[hit.end():]
+                fixes.append({"wrong": sent, "right": fixed,
+                              "rule": f"The spelling is '{good}'."})
+                break
+    return fixes
+
+
+VAGUE_TIPS = (
+    ("nice", "Try 'important' in place of 'nice'."),
+    ("very", "Drop 'very' and pick a stronger word."),
+    ("good", "Try 'useful' in place of 'good'."),
+    ("bad", "Try 'weak' in place of 'bad'."),
+    ("big", "Try 'large' in place of 'big'."),
+    ("small", "Try 'tiny' in place of 'small'."),
+    ("things", "Name the things in place of 'things'."),
+    ("stuff", "Name it exactly in place of 'stuff'."),
+    ("a lot", "Say 'many' or 'much' in place of 'a lot'."),
+    ("get", "Try 'receive' in place of 'get'."),
+)
+
+
+def _vocab_tips(text: str) -> list[dict]:
+    """1-2 better word choices, only for words the learner used."""
+    tips = []
+    lowered = f" {(text or '').lower()} "
+    for word, tip in VAGUE_TIPS:
+        if len(tips) >= 2:
+            break
+        if re.search(r"(?<![a-z])" + re.escape(word) + r"(?![a-z])", lowered):
+            tips.append({"word": word, "tip": tip})
+    return tips
+
+
+def _topic_word(text: str) -> str | None:
+    """Most repeated content word: an honest link to their topic."""
+    words = [w for w in re.findall(r"[A-Za-z']+", (text or "").lower())
+             if w not in _COMMON_WORDS and len(w) > 3]
+    if not words:
+        return None
+    return max(sorted(set(words)), key=words.count)
+
+
+def _motivation_card(name: str, band: str, strength: dict | None, text: str,
+                     actions: list[str], topic: str,
+                     next_goal: str) -> dict:
+    """Twin message, fixes, tips, improve points, critical tip, next goal."""
+    quote = (strength or {}).get("quote")
+    topic_word = _topic_word(text) or topic
+    return {
+        "twin_message": _twin_message(name, band, quote),
+        "grammar_fixes": _grammar_fixes(text)[:3],
+        "vocab_tips": _vocab_tips(text)[:2],
+        "improve": actions[:3],
+        "critical_tip": ("Ask yourself: why does "
+                         f"{topic_word} matter to your reader?"),
+        "next_goal": next_goal,
+    }
 
 
 def _template_feedback(skills_info: dict, weakest_two: list,
@@ -3130,6 +3307,41 @@ DEMO_FEEDBACK_IMPROVED = {
               "changed": "Fewer words carry the same point."},
     "your_turn": "Fix your other lines the same way, then rewrite your "
                  "paragraph below.",
+}
+
+# Fixed motivation parts for the scripted demo cards (the twin message is
+# built at serve time so it carries the learner's own first name).
+DEMO_MOTIVATION_WEAK = {
+    "grammar_fixes": [
+        {"wrong": "Plastic is very big problem.",
+         "right": "Plastic is a very big problem.",
+         "rule": "Add 'a' before one thing."},
+        {"wrong": "People throw the waste in river and fish is dying.",
+         "right": "People throw the waste into the river and fish is dying.",
+         "rule": "Use 'the' for a known place."},
+        {"wrong": "Also the students also should know.",
+         "right": "The students should also know.",
+         "rule": "Say 'also' once."},
+    ],
+    "vocab_tips": [
+        {"word": "very", "tip": "Drop 'very' and pick a stronger word."},
+        {"word": "big", "tip": "Try 'large' in place of 'big'."},
+    ],
+    "improve": ["Make your first sentence say your main idea.",
+                "Name one source."],
+    "critical_tip": "Ask yourself: why does plastic matter to your reader?",
+    "next_goal": "Next goal: Make your first sentence say your main idea.",
+}
+
+DEMO_MOTIVATION_IMPROVED = {
+    "grammar_fixes": [],
+    "vocab_tips": [
+        {"word": "set up", "tip": "Try 'install' in place of 'set up'."},
+    ],
+    "improve": ["Name one source.",
+                "Swap one chatty word for a calm one."],
+    "critical_tip": "Ask yourself: why does plastic matter to your reader?",
+    "next_goal": "Next goal: Name one source.",
 }
 
 
@@ -3668,6 +3880,7 @@ VERIFY_FIXES = {
     "quotes-in-text": "Quote only words that exist in the learner's text.",
     "one-rewrite": "Rewrite at most one sentence, as one sentence.",
     "simple-english": "Use basic words and short lines.",
+    "grammar-quotes": "Copy each grammar error exactly from the learner's text.",
 }
 
 # Structural subset for the curated bank (exempt from no-invented-examples).
@@ -3786,6 +3999,15 @@ def _verify_assessor_rules(payload: dict) -> list[str]:
                 or quote not in _normalized(payload.get("attempt") or "") \
                 or quote not in _normalized(payload.get("feedback") or ""):
             failed.append("quotes-learner")
+    attempt = _normalized(payload.get("attempt") or "")
+    if any(len(_normalized(q)) < 4 or _normalized(q) not in attempt
+           for q in payload.get("grammar_quotes") or []):
+        failed.append("grammar-quotes")
+    fields = [f for f in payload.get("fields") or [] if (f or "").strip()]
+    if any(not _uses_simple_english(f) for f in fields):
+        failed.append("simple-english")
+    if any(_has_generic_praise(f) for f in fields):
+        failed.append("no-generic-praise")
     return failed
 
 
@@ -4395,7 +4617,8 @@ def _scan_with_spark(image_url: str) -> tuple[dict | None, str | None]:
     last_error = "no response"
     for _ in range(1 + SPARK_MAX_REGENS):
         try:
-            data = json.loads(_spark_chat(messages))
+            data = json.loads(_spark_chat(messages,
+                                           timeout=SPARK_TIMEOUT_SLOW))
         except (SparkError, ValueError) as exc:
             last_error = str(exc)[:200]
             continue
@@ -4404,6 +4627,16 @@ def _scan_with_spark(image_url: str) -> tuple[dict | None, str | None]:
             return fields, None
         last_error = "invalid transcription shape"
     return None, last_error
+
+
+def _scan_fallback_message(error: str) -> str:
+    """Friendly real reason for a failed scan (raw error stays in the log)."""
+    if "timed out" in (error or ""):
+        return ("The photo took too long to read - try a smaller, "
+                "clearer photo")
+    if error == "invalid transcription shape":
+        return "The writing was hard to read - try a clearer photo."
+    return SCAN_FALLBACK
 
 
 @app.post("/drafts/scan")
@@ -4420,7 +4653,7 @@ def post_draft_scan(data: DraftScanIn):
     if found is None:
         store.log_event(data.learner_id, "Write", "twin", "scan",
                         f"scan failed: {error}")
-        return {"ok": False, "message": SCAN_FALLBACK}
+        return {"ok": False, "message": _scan_fallback_message(error)}
     store.log_event(
         data.learner_id, "Write", "twin", "scan",
         f"Read by Muse Spark (vision): {len(found['unclear'])} unclear words")
@@ -4528,6 +4761,21 @@ def post_diagnose(data: DiagnoseIn):
                 feedback = _template_feedback(detail, weakest_two, text)
     store.save_skill_scores(data.learner_id, scores, detail)
     level = level_for_score(scores[weakest])
+    first = ((learner.get("name") or "friend").split() or ["friend"])[0]
+    band = ("strong" if level >= 4 else "good" if level == 3
+            else "fair" if level == 2 else "weak")
+    ordered = sorted(SKILLS, key=lambda s: (scores[s], SKILLS.index(s)))
+    motivation = _motivation_card(
+        first, band, (feedback or {}).get("strength"), text,
+        [NEXT_WIN_ACTIONS[s] for s in ordered[:2]],
+        DISCIPLINE_TOPICS.get(discipline, "your topic"),
+        f"Next goal: {NEXT_WIN_ACTIONS[weakest]}.")
+    if demo_fixed is not None:
+        motivation.update(DEMO_MOTIVATION_WEAK)
+    elif demo_improved:
+        motivation.update(DEMO_MOTIVATION_IMPROVED)
+    if isinstance(feedback, dict):
+        feedback["motivation"] = motivation
     if demo_improved:
         comparison = DEMO_COMPARISON
     elif prev_scores:
@@ -4576,6 +4824,61 @@ def post_diagnose(data: DiagnoseIn):
             "level_changes": level_changes,
             "study_material": study_material(weakest),
             "learn": learn}
+
+
+SPARK_POLISH_SYSTEM = (
+    "You rewrite a learner's paragraph in correct English for a first-year "
+    "Indian undergraduate. Keep every idea and fact they wrote; fix the "
+    "language only and never add new facts. Reply with a JSON object only, "
+    "no other text, with one key: polished (their whole paragraph, "
+    "rewritten correctly).")
+
+
+def _polish_with_spark(text: str) -> str | None:
+    """Whole-paragraph rewrite, or None after retries (never invent facts)."""
+    if _model_api_key() is None:
+        return None
+    messages = [{"role": "system", "content": SPARK_POLISH_SYSTEM},
+                {"role": "user", "content": f"Paragraph: {text}"}]
+    words = len(text.split())
+    for _ in range(1 + SPARK_MAX_REGENS):
+        try:
+            data = json.loads(_spark_chat(messages, temperature=0,
+                                           timeout=SPARK_TIMEOUT_SLOW))
+        except (SparkError, ValueError):
+            continue
+        polished = (data.get("polished") or "").strip() \
+            if isinstance(data, dict) else ""
+        if not polished:
+            continue
+        ratio = len(polished.split()) / max(1, words)
+        if 0.5 <= ratio <= 2.0:
+            return polished
+    return None
+
+
+@app.post("/polish")
+def post_polish(data: PolishIn):
+    """Compare step: a polished rewrite, unlocked after their own rewrite."""
+    if store.get_learner(data.learner_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown learner_id")
+    drafts = [d for d in store.get_drafts(data.learner_id)
+              if d["id"] == data.draft_id]
+    if not drafts:
+        raise HTTPException(status_code=404, detail="Unknown draft_id")
+    if len(store.get_drafts(data.learner_id)) < 2:
+        return {"ok": False,
+                "message": "Rewrite your paragraph first, then compare."}
+    polished = _polish_with_spark(drafts[0]["content"])
+    if polished is None:
+        store.log_event(data.learner_id, "Write", "twin", "polish",
+                        "polished version unavailable")
+        return {"ok": False,
+                "message": "Polished version unavailable right now - "
+                           "try again later."}
+    store.log_event(data.learner_id, "Write", "twin", "polish",
+                    f"draft_id={data.draft_id} words={len(polished.split())}")
+    return {"ok": True, "original": drafts[0]["content"], "polished": polished}
 
 
 @app.get("/rubric")
@@ -5313,6 +5616,8 @@ def get_growth(learner_id: int):
                                       "evidence": row.get("evidence")}
         history.setdefault(row["skill_name"], []).append(
             {"score": row["score"], "date": row["date"]})
+    daily = {"paragraphs": store.count_drafts_today(learner_id),
+             "target": 3}
     strongest = next_win = None
     if levels:
         best = max(SKILLS, key=lambda s: levels.get(s, 1))
@@ -5331,7 +5636,7 @@ def get_growth(learner_id: int):
                     "quote": _first_words(evidence, 12)}
     return {"learner_id": learner_id, "scores": scores, "levels": levels,
             "details": details, "history": history,
-            "strongest": strongest, "next_win": next_win}
+            "strongest": strongest, "next_win": next_win, "daily": daily}
 
 
 def independence(learner_id: int) -> dict:

@@ -40,7 +40,7 @@ def test_scan_instruction_is_fixed_text():
 def test_scan_returns_text_and_unclear(tmp_db, monkeypatch):
     calls = []
 
-    def fake_chat(messages):
+    def fake_chat(messages, timeout=None):
         calls.append(messages)
         return _scan_reply("Plastic is [unclear] problem.", ["Plastic is"])
 
@@ -68,7 +68,8 @@ def test_scan_raw_base64_gets_data_url(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
     monkeypatch.setattr(
         main, "_spark_chat",
-        lambda messages: calls.append(messages) or _scan_reply("Nice.", []))
+        lambda messages, timeout=None:
+        calls.append(messages) or _scan_reply("Nice.", []))
     learner_id = _learner(tmp_db)
     res = main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
                                                 image="abc123"))
@@ -82,7 +83,7 @@ def test_scan_rejects_bad_shape_and_retries(tmp_db, monkeypatch):
                _scan_reply("One [unclear] two.", ["One"])]
     calls = []
 
-    def fake_chat(messages):
+    def fake_chat(messages, timeout=None):
         calls.append(messages)
         return replies[len(calls) - 1]
 
@@ -121,7 +122,7 @@ def test_validate_scan_accepts_missing_unclear_list():
 
 
 def test_scan_failure_logs_real_error(tmp_db, monkeypatch):
-    def bad_chat(messages):
+    def bad_chat(messages, timeout=None):
         raise main.SparkError("HTTP 400: bad image")
 
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
@@ -161,12 +162,38 @@ def test_spark_post_names_timeouts(monkeypatch):
     assert "timed out after 20s" in str(exc.value)
 
 
+def test_scan_timeout_names_real_reason(tmp_db, monkeypatch):
+    def slow_chat(messages, timeout=None):
+        raise main.SparkError("request timed out after 40s")
+
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat", slow_chat)
+    learner_id = _learner(tmp_db)
+    res = main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
+                                                image=FAKE_IMAGE))
+    assert res == {"ok": False, "message":
+                   "The photo took too long to read - try a smaller, "
+                   "clearer photo"}
+
+
+def test_scan_bad_shape_names_real_reason(tmp_db, monkeypatch):
+    monkeypatch.setattr(main, "_model_api_key", lambda: "K")
+    monkeypatch.setattr(main, "_spark_chat",
+                        lambda messages, timeout=None:
+                        json.dumps({"text": ""}))
+    learner_id = _learner(tmp_db)
+    res = main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
+                                                image=FAKE_IMAGE))
+    assert res == {"ok": False, "message":
+                   "The writing was hard to read - try a clearer photo."}
+
+
 def test_scan_exhausts_retries_then_fallback(tmp_db, monkeypatch):
     calls = []
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
     monkeypatch.setattr(
         main, "_spark_chat",
-        lambda messages: calls.append(messages) or "nope")
+        lambda messages, timeout=None: calls.append(messages) or "nope")
     learner_id = _learner(tmp_db)
     res = main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
                                                 image=FAKE_IMAGE))
@@ -195,7 +222,7 @@ def test_scan_rejects_empty_and_oversize(tmp_db, monkeypatch):
         assert res == {"ok": False, "message": "Please type your paragraph."}
 
 
-def test_scan_uses_short_timeout(tmp_db, monkeypatch):
+def test_scan_uses_slow_timeout(tmp_db, monkeypatch):
     seen = {}
 
     def fake_post(url, body, key, timeout):
@@ -209,7 +236,7 @@ def test_scan_uses_short_timeout(tmp_db, monkeypatch):
     res = main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
                                                 image=FAKE_IMAGE))
     assert res["ok"] is True
-    assert seen["timeout"] == main.SPARK_TIMEOUT <= 20
+    assert seen["timeout"] == main.SPARK_TIMEOUT_SLOW == 40
     assert seen["body"]["model"] == "muse-spark-1.3"
     assert seen["body"]["messages"][1]["content"][1]["type"] == "image_url"
 
@@ -224,11 +251,13 @@ def test_scan_rejects_unknown_learner(tmp_db):
 def test_scan_never_stores_photo(tmp_db, monkeypatch):
     monkeypatch.setattr(main, "_model_api_key", lambda: "K")
     monkeypatch.setattr(main, "_spark_chat",
-                        lambda messages: _scan_reply("Nice.", []))
+                        lambda messages, timeout=None:
+                        _scan_reply("Nice.", []))
     learner_id = _learner(tmp_db)
     main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
                                           image=FAKE_IMAGE))
-    monkeypatch.setattr(main, "_spark_chat", lambda messages: "nope")
+    monkeypatch.setattr(main, "_spark_chat",
+                        lambda messages, timeout=None: "nope")
     main.post_draft_scan(main.DraftScanIn(learner_id=learner_id,
                                           image=FAKE_IMAGE))
     assert store.get_drafts(learner_id) == []
@@ -304,3 +333,7 @@ def test_scan_and_voice_on_learn_and_practice_boxes():
     assert "VoiceButton" in practice and "ScanButton" in practice
     twin = (comp / "TwinPanel.jsx").read_text(encoding="utf-8")
     assert "ScanButton" in twin  # Speak was already there
+    assert "Reading your paper..." in scan
+    write = (ROOT / "frontend" / "src" / "screens" / "Write.jsx").read_text(
+        encoding="utf-8")
+    assert "Reading your paper..." in write

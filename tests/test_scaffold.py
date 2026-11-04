@@ -756,6 +756,6 @@ def test_feedback_card_ui_strings():
     task = (ROOT / "frontend" / "src" / "components" / "ScaffoldTask.jsx"
             ).read_text(encoding="utf-8")
     assert "Twin's feedback" in task
-    assert "Let me show you one" in task and "✏️" in task
+    assert "FeedbackCard" in task and "modelSentence" in task
     assert "res.excerpt.label" in task and "Compare" in task
     assert "Your sentence:" in task

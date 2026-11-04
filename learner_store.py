@@ -316,6 +316,16 @@ def update_draft_feedback(draft_id: int, feedback: str) -> None:
         )
 
 
+def count_drafts_today(learner_id: int) -> int:
+    """Paragraphs submitted today (UTC) for the daily goal."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM drafts WHERE learner_id = ?"
+            " AND date(created_at) = date('now')",
+            (learner_id,),
+        ).fetchone()[0]
+
+
 # --- Event log ------------------------------------------------------------------
 def log_event(learner_id: int, step: str, agent: str, tool: str, result: str) -> int:
     """Append one audit row (practice-loop step); returns the new event id."""
