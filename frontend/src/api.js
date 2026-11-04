@@ -1,7 +1,7 @@
 // API client for the FastAPI backend (default http://127.0.0.1:8000).
 // Override with VITE_API_URL in frontend/.env for another host.
 
-// Demo learner id. Run `python learner_store.py` once to create learner 1.
+// Demo learner id. Run `python scripts/reset_demo.py` to create learner 1.
 export const LEARNER_ID = 1;
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
@@ -14,16 +14,20 @@ async function request(path, options = {}) {
       ...options,
     });
   } catch {
-    throw new Error('Cannot reach the backend. Start it with: uvicorn main:app');
+    throw new Error(`Cannot reach the backend at ${API_URL}. Start it with: uvicorn main:app`);
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     if (res.status === 404 && body.detail === 'Unknown learner_id') {
-      throw new Error('Demo learner not found. Run `python learner_store.py` once.');
+      throw new Error('Demo learner not found. Run `python scripts/reset_demo.py`.');
     }
     throw new Error(body.detail || `Request failed (${res.status})`);
   }
-  return res.json();
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`Request failed (${res.status}): invalid response`);
+  }
 }
 
 const post = (path, body) =>
