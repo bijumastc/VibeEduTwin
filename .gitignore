@@ -20,3 +20,6 @@ pytest-of-*/
 err_probe*
 *_staging.py
 lesson*.txt
+
+pip-*/
+tmp*/
