@@ -92,7 +92,8 @@ structurally checked at serve time and failures are excluded.
 - `simple-english`: no formal words, no sentence over 25 words.
 - `no-generic-praise`: none of "great job", "excellent", "amazing".
   Rejected Spark drafts retry (max 2 regens), then the deterministic
-  template card (two problems, no rewrite) is served.
+  template card (strength, two problems, and one rewrite when the text
+  allows) is served.
   The motivation layer (twin message, grammar fixes, word tips, improve
   points, critical tip, next goal) is deterministic: every fix copies the
   learner's exact words, and the same checklist guards the served card.
@@ -282,4 +283,5 @@ counts as one): the idea and one worked example (different topic) come
 first, then the task, then full feedback with "Compare with a polished
 version" after the rewrite. After 6 activities, or from Level 3,
 the skill switches to challenge mode: the productive-struggle ladder
-with "Show me now" available.
+with "Show me now" available. The task card shows progress toward
+challenge mode ("Guided · 4 of 6 activities").

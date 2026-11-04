@@ -152,6 +152,13 @@ export default function ScaffoldTask({ discipline, moduleId, moduleTitle, onBack
       <div className="card tint">
         <div className="card-title">Your task</div>
         <p>{view.task}</p>
+        {view.mode && (
+          <p className="muted">
+            {view.mode === 'guided'
+              ? `Guided · ${view.activities_done} of ${view.activities_needed} activities`
+              : 'Challenge mode'}
+          </p>
+        )}
       </div>
 
       {feed.map((e, i) => (

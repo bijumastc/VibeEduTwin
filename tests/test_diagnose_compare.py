@@ -366,4 +366,5 @@ def test_diagnose_sends_temperature_zero_with_slow_timeout(tmp_db, monkeypatch):
     assert seen["body"]["temperature"] == 0
     assert seen["timeout"] == main.SPARK_TIMEOUT_SLOW == 40
     assert res["scores"]["Grammar"] == 50
-    assert res["weakest"] == "Grammar"  # tie: first skill wins
+    # Tie at L3 with every other skill L3+: the focus rule picks Using sources.
+    assert res["weakest"] == "Using sources"

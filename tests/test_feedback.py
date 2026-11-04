@@ -57,7 +57,7 @@ def _feedback_ok(text):
         "your_turn": "Fix your other lines the same way."})
 
 
-# --- Template fallback (no key): quotes the learner, no rewrite ---------------
+# --- Template fallback (no key): quotes the learner, full card ---------------
 def test_template_feedback_quotes_learner_text(tmp_db):
     learner_id = _learner(tmp_db)
     res = main.post_diagnose(main.DiagnoseIn(learner_id=learner_id,
@@ -71,6 +71,8 @@ def test_template_feedback_quotes_learner_text(tmp_db):
         assert detail["reason"].strip()
         assert detail["evidence"] in EXAMPLE
     card = res["feedback"]
+    assert card["strength"] is not None
+    assert card["strength"]["quote"] in EXAMPLE
     assert len(card["problems"]) == 2
     for problem in card["problems"]:
         assert problem["quote"] in EXAMPLE
@@ -78,7 +80,8 @@ def test_template_feedback_quotes_learner_text(tmp_db):
         assert problem["fix"].strip()
     quotes = [p["quote"] for p in card["problems"]]
     assert quotes[0] != quotes[1]  # two different sentences
-    assert card["model"] is None  # template never rewrites
+    assert card["model"] is not None  # template rewrites one sentence
+    assert card["model"]["before"] in EXAMPLE
     assert card["your_turn"].strip()
     assert main.verify("feedback",
                        main._feedback_verify_payload(card, EXAMPLE))["pass"]
@@ -165,7 +168,8 @@ def test_bad_feedback_retries_then_template(tmp_db, monkeypatch):
                                              content=text))
     feedback_calls = [c for c in calls if "give feedback" in c[0]["content"]]
     assert len(feedback_calls) == 1 + main.SPARK_MAX_REGENS
-    assert res["feedback"]["model"] is None  # template fallback
+    assert res["feedback"]["model"] is not None  # template fallback rewrites
+    assert res["feedback"]["strength"] is not None
     rejected = [r for r in store.get_events(learner_id)
                 if r["tool"] == "verify-feedback"]
     assert rejected and "quotes-in-text" in rejected[0]["result"]

@@ -356,11 +356,14 @@ def _first_words(text: str, n: int) -> str:
 
 
 def next_win_skill(levels: dict[str, int], text: str) -> str:
-    """The Home focus skill: weakest of the six craft skills first.
+    """The focus skill: weakest of the six craft skills first.
 
     Using sources wins only when it is the weakest AND the paragraph
     tries evidence or facts, or every other skill is already Level 3+.
+    With no history the default focus is Paragraphing.
     """
+    if not levels:
+        return "Paragraphing"
     six = [s for s in SKILLS if s != "Using sources"]
     weakest_six = min(six, key=lambda s: (levels.get(s, 1),
                                           SKILLS.index(s)))
@@ -1355,9 +1358,14 @@ def discipline_modules(discipline: str) -> list[dict]:
     return [*CURRICULUM_MODULES, genre_module(discipline)]
 
 
-def module_states(discipline: str, scores: dict[str, float]) -> list[dict]:
-    """All modules open; the first module of the weakest skill is recommended."""
-    weak, _ = weakest_skill(scores)
+def module_states(discipline: str, scores: dict[str, float],
+                  text: str = "") -> list[dict]:
+    """All modules open; the first module of the focus skill is recommended."""
+    if scores:
+        levels = {s: level_for_score(scores.get(s, 0)) for s in SKILLS}
+        weak = next_win_skill(levels, text)
+    else:
+        weak = "Paragraphing"
     states = []
     for module in discipline_modules(discipline):
         level = level_for_score(scores.get(module["skill"], 0))
@@ -3280,12 +3288,15 @@ def _vocab_tips(text: str) -> list[dict]:
 
 
 def _topic_word(text: str) -> str | None:
-    """Most repeated content word: an honest link to their topic."""
+    """Most repeated content word: an honest link to their topic.
+
+    Ties go to the earliest word: the opening topic usually is the point.
+    """
     words = [w for w in re.findall(r"[A-Za-z']+", (text or "").lower())
              if w not in _COMMON_WORDS and len(w) > 3]
     if not words:
         return None
-    return max(sorted(set(words)), key=words.count)
+    return max(set(words), key=lambda w: (words.count(w), -words.index(w)))
 
 
 def _motivation_card(name: str, band: str, strength: dict | None, text: str,
@@ -3305,9 +3316,73 @@ def _motivation_card(name: str, band: str, strength: dict | None, text: str,
     }
 
 
+def _quote_start(text: str, n: int) -> str:
+    """First n words exactly as written (no ellipsis: quotes must match)."""
+    return " ".join((text or "").split()[:n])
+
+
+def _template_strength(text: str) -> dict | None:
+    """One honest strength quoting the learner, or None when too short."""
+    sents = _text_sentences(text)
+    topic = _topic_word(text)
+    for sent in sents:
+        words = sent.split()
+        if len(words) < 5:
+            continue
+        quote = sent if len(words) <= 10 else _quote_start(sent, 10)
+        if topic and topic in sent.lower():
+            return {"quote": quote,
+                    "line": f"You state your point about {topic} "
+                            "in your own words."}
+    for sent in sents:
+        words = sent.split()
+        if len(words) >= 5:
+            quote = sent if len(words) <= 10 else _quote_start(sent, 10)
+            return {"quote": quote,
+                    "line": "You put your idea in your own words."}
+    return None
+
+
+def _template_model(text: str) -> dict | None:
+    """One mechanical rewrite (capital, stop, spelling), or None when clean.
+
+    The rewrite must stay visible after case folding (the verifier folds
+    case), so a capital-only fix gains a full stop too when one is missing.
+    """
+    sents = _text_sentences(text)
+    fixes = {f["wrong"]: f for f in _grammar_fixes(text)}
+    cands = []
+    for sent in sents:
+        fix = fixes.get(sent)
+        if fix is not None:
+            cands.append((sent, fix["right"], fix["rule"]))
+    for sent in sents:
+        cand = sent.strip()
+        if cand and cand[0].isalpha() and not cand[0].isupper():
+            fixed = cand[0].upper() + cand[1:]
+            if not re.search(r"[.!?]$", fixed):
+                fixed += "."
+            cands.append((sent, fixed,
+                          "It starts with a capital letter."))
+        elif cand and not re.search(r"[.!?]$", cand):
+            cands.append((sent, cand + ".", "It ends with a full stop."))
+    for before, after, changed in cands:
+        if _normalized(after) == _normalized(before) \
+                and not re.search(r"[.!?]$", after):
+            after += "."
+            changed += " It ends with a full stop."
+        if _normalized(after) == _normalized(before):
+            continue
+        if len([s for s in re.split(r"[.!?]+", after)
+                if s.strip()]) != 1:
+            continue
+        return {"before": before, "after": after, "changed": changed}
+    return None
+
+
 def _template_feedback(skills_info: dict, weakest_two: list,
                        text: str) -> dict:
-    """Deterministic card from skill reasons: two problems, no rewrite."""
+    """Deterministic card: strength, two problems, one rewrite when possible."""
     problems = []
     for skill in weakest_two:
         info = skills_info[skill]
@@ -3315,11 +3390,14 @@ def _template_feedback(skills_info: dict, weakest_two: list,
         problems.append({"quote": info["evidence"], "wrong": info["reason"],
                          "why": why, "fix": fix})
     sents = _text_sentences(text)
-    if len(sents) > 1 and problems[0]["quote"] == problems[1]["quote"]:
+    if problems[0]["quote"] == problems[1]["quote"]:
         other = next((s for s in sents if s != problems[0]["quote"]), None)
         if other is not None:
             problems[1]["quote"] = other
-    return {"strength": None, "problems": problems, "model": None,
+        elif len(problems[0]["quote"].split()) > 6:
+            problems[1]["quote"] = _quote_start(problems[0]["quote"], 6)
+    return {"strength": _template_strength(text), "problems": problems,
+            "model": _template_model(text),
             "your_turn": "Fix these two lines the same way, then rewrite "
                          "your paragraph below."}
 
@@ -4760,7 +4838,8 @@ def post_diagnose(data: DiagnoseIn):
             f"\"{demo_fixed[weakest]['evidence']}\")")
     elif sparked is not None:
         scores = {s: DIAGNOSE_LEVEL_SCORES[sparked[s]["level"]] for s in SKILLS}
-        weakest = min(SKILLS, key=lambda s: sparked[s]["level"])
+        weakest = next_win_skill(
+            {s: sparked[s]["level"] for s in SKILLS}, text)
         wlevel = sparked[weakest]["level"]
         store.log_event(
             data.learner_id, "Diagnose", "twin", "diagnose-spark",
@@ -4784,12 +4863,21 @@ def post_diagnose(data: DiagnoseIn):
             scores["Paragraphing"] = DIAGNOSE_LEVEL_SCORES[2]
         else:
             scores = _cap_fallback_scores(text, scores)
-        weakest = min(SKILLS, key=lambda s: scores[s])
+        if demo_improved:
+            weakest = min(SKILLS, key=lambda s: scores[s])
+        else:
+            weakest = next_win_skill(
+                {s: level_for_score(scores[s]) for s in SKILLS}, text)
         if demo_improved:
             store.log_event(
                 data.learner_id, "Diagnose", "twin", "diagnose-demo",
                 "Demo diagnosis (improved paragraph; Paragraphing pinned L2)")
         else:
+            if _model_api_key() is not None:
+                store.log_event(
+                    data.learner_id, "Diagnose", "twin",
+                    "diagnose-spark-failed",
+                    "Muse Spark diagnosis failed; using quick estimate")
             store.log_event(data.learner_id, "Diagnose", "diagnose",
                             "heuristic-scorer",
                             f"weakest={weakest} scores={scores}")
@@ -4806,8 +4894,10 @@ def post_diagnose(data: DiagnoseIn):
         if demo_improved:
             feedback = dict(DEMO_FEEDBACK_IMPROVED)
         else:
-            weakest_two = sorted(
-                SKILLS, key=lambda s: (scores[s], SKILLS.index(s)))[:2]
+            ordered = sorted(
+                SKILLS, key=lambda s: (scores[s], SKILLS.index(s)))
+            weakest_two = [weakest] + [
+                s for s in ordered if s != weakest][:1]
             feedback = None
             if sparked is not None:
                 feedback = _feedback_with_spark(
@@ -4967,11 +5057,13 @@ def get_curriculum(learner_id: int):
     if learner is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
     scores = latest_scores(learner_id)
+    drafts = store.get_drafts(learner_id)
+    latest = drafts[-1]["content"] if drafts else ""
     return {"learner_id": learner_id,
             "discipline": learner.get("discipline") or "Sciences",
             "disciplines": [
                 {"name": name, "genre": genre,
-                 "modules": module_states(name, scores)}
+                 "modules": module_states(name, scores, latest)}
                 for name, genre in DISCIPLINE_GENRES.items()
             ]}
 
@@ -4986,7 +5078,10 @@ def _module_state_or_raise(learner_id: int, discipline: str,
     modules = {m["id"]: m for m in discipline_modules(discipline)}
     if module_id not in modules:
         raise HTTPException(status_code=404, detail="Unknown module")
-    states = {s["id"]: s for s in module_states(discipline, latest_scores(learner_id))}
+    drafts = store.get_drafts(learner_id)
+    latest = drafts[-1]["content"] if drafts else ""
+    states = {s["id"]: s for s in module_states(
+        discipline, latest_scores(learner_id), latest)}
     state = states[module_id]
     return state, modules[module_id]  # no locks: every module is open
 
@@ -5005,6 +5100,12 @@ def _scaffold_view(attempt_id: str, attempt: dict, extra: dict | None = None) ->
     view = {"attempt_id": attempt_id, "step": attempt["step"],
             "task": scaffold_task(attempt["discipline"], attempt["module"]),
             "module": attempt["module"], "discipline": attempt["discipline"]}
+    learner_id, skill = attempt.get("learner_id"), attempt.get("skill")
+    if learner_id is not None and skill:
+        mode = attempt.get("mode") or skill_mode(learner_id, skill)
+        view["mode"] = mode
+        view["activities_done"] = store.count_activities(learner_id, skill)
+        view["activities_needed"] = GUIDED_ACTIVITIES
     if extra:
         view.update(extra)
     return view
@@ -6340,7 +6441,11 @@ def post_twin_ask(data: TwinAskIn):
     """Bridge step: short scaffolded twin reply (template until Muse Spark lands)."""
     if store.get_learner(data.learner_id) is None:
         raise HTTPException(status_code=404, detail="Unknown learner_id")
-    weakest, _ = weakest_skill(latest_scores(data.learner_id))
+    saved = latest_scores(data.learner_id)
+    drafts = store.get_drafts(data.learner_id)
+    latest = drafts[-1]["content"] if drafts else ""
+    weakest = next_win_skill(
+        {s: level_for_score(v) for s, v in saved.items()}, latest)
     if _demo_mode():
         drafts = store.get_drafts(data.learner_id)
         if drafts and _demo_text_match(drafts[-1]["content"],
